@@ -49,8 +49,9 @@ polaris \
   my_r2_catalog
 ```
 
-Before creating an R2 catalog, an administrator must configure a server-side parent API token
-for Polaris to mint temporary credentials from; see
+Before creating an R2 catalog, an administrator must add `R2` to `SUPPORTED_CATALOG_STORAGE_TYPES`,
+because the type is opt-in and absent from the default list, and must configure a server-side
+parent API token for Polaris to mint temporary credentials from; see
 [Configuring Polaris for Production — Cloudflare R2]({{% ref "../../configuration/configuring-polaris-for-production/configuring-cloudflare-r2-cloud-storage-specific" %}}).
 If the server holds named parent tokens (`polaris.storage.r2.<name>.*`), add
 `--storage-name <name>` to bind the catalog to one of them; without it the catalog uses the

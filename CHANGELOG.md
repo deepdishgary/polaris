@@ -54,10 +54,6 @@ request adding CHANGELOG notes for breaking (!) changes and possibly other secti
   ```
   Postgres and H2 are unaffected.
 
-- The default `SUPPORTED_CATALOG_STORAGE_TYPES` now includes `R2`. Deployments that override the
-  list are unaffected, and creating an R2 catalog still requires `polaris.storage.r2.*` on the
-  server.
-
 ### Breaking changes
 
 - Concurrent table commits that hit a stale sequence number now return a retryable `409` instead of a fatal `400`, for both single-table commits and `commitTransaction`.
@@ -85,6 +81,7 @@ request adding CHANGELOG notes for breaking (!) changes and possibly other secti
 - Added the `R2` storage type for Cloudflare R2. Polaris mints prefix-scoped temporary credentials
   by signing a JWT with a server-side parent token (`polaris.storage.r2.*`); catalogs declare
   `accountId` and an optional `jurisdiction`, from which the endpoint and token audience derive.
+  R2 is opt-in: add `R2` to `SUPPORTED_CATALOG_STORAGE_TYPES`.
 
 ### Changes
 

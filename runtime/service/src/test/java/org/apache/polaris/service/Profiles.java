@@ -71,6 +71,11 @@ public final class Profiles {
           "true",
           "polaris.features.\"ENFORCE_PRINCIPAL_CREDENTIAL_ROTATION_REQUIRED_CHECKING\"",
           "true",
+          // R2 is opt-in, so it is absent from the shipped default this test would otherwise
+          // inherit. The rest of the list repeats that default, to leave every other case here
+          // unchanged.
+          "polaris.features.\"SUPPORTED_CATALOG_STORAGE_TYPES\"",
+          "[\"S3\",\"GCS\",\"AZURE\",\"R2\"]",
           "polaris.storage.gcp.token",
           "token",
           "polaris.storage.gcp.lifespan",

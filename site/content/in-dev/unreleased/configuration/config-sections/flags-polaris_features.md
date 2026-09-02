@@ -563,7 +563,7 @@ The list of supported catalog connection types for federation
 The list of supported storage types for a catalog
 
 - **Type:** `List<String>`
-- **Default:** `[S3, AZURE, GCS, R2]`
+- **Default:** `[S3, AZURE, GCS]`
 - **Catalog Config:** `polaris.config.supported.storage.types`
 
 ---

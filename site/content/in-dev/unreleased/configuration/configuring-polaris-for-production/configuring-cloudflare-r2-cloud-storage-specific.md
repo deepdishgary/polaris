@@ -29,6 +29,25 @@ by signing a JWT with a server-side **parent token**, the path Cloudflare docume
 high-volume minting. Each vended credential is bound to one bucket and to the table's key
 prefixes, and it expires after `STORAGE_CREDENTIAL_DURATION_SECONDS`.
 
+## Enable the storage type
+
+`R2` is opt-in. It is not in the default `SUPPORTED_CATALOG_STORAGE_TYPES`, so creating an R2
+catalog returns 400 `Unsupported storage type: R2` until you add it. Enable it for the server:
+
+```properties
+polaris.features."SUPPORTED_CATALOG_STORAGE_TYPES"=["S3","AZURE","GCS","R2"]
+```
+
+This list replaces the default instead of adding to it, so name every storage type your deployment
+uses. To enable R2 in one realm only, use a realm override:
+
+```properties
+polaris.features.realm-overrides."my-realm"."SUPPORTED_CATALOG_STORAGE_TYPES"=["S3","AZURE","GCS","R2"]
+```
+
+Warning: a Polaris image that does not know the `R2` type refuses to start while `R2` is in this
+list. Remove `R2` from the list before you downgrade to an image built without it.
+
 ## Server configuration
 
 Create an R2 API token in the Cloudflare dashboard with **Object Read & Write** on every bucket
@@ -54,7 +73,7 @@ Deliver the secret through a secret config source or environment variables
 credential chain, so a static server-side parent token is the only supported path. Polaris logs a
 warning at startup if only one half of the key pair is set.
 
-Add `R2` to `SUPPORTED_CATALOG_STORAGE_TYPES` if your deployment overrides the default list.
+The parent token is separate from enabling the type: both are needed before a catalog can vend.
 
 ## Catalog configuration
 

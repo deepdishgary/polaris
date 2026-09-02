@@ -400,8 +400,7 @@ public class FeatureConfiguration<T> extends PolarisConfiguration<T> {
               List.of(
                   StorageConfigInfo.StorageTypeEnum.S3.name(),
                   StorageConfigInfo.StorageTypeEnum.AZURE.name(),
-                  StorageConfigInfo.StorageTypeEnum.GCS.name(),
-                  StorageConfigInfo.StorageTypeEnum.R2.name()))
+                  StorageConfigInfo.StorageTypeEnum.GCS.name()))
           .buildFeatureConfiguration();
 
   public static final FeatureConfiguration<Boolean> CLEANUP_ON_NAMESPACE_DROP =
