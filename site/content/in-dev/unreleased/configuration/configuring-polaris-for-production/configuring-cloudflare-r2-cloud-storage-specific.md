@@ -73,6 +73,25 @@ Deliver the secret through a secret config source or environment variables
 credential chain, so a static server-side parent token is the only supported path. Polaris logs a
 warning at startup if only one half of the key pair is set.
 
+A named entry has two environment-variable forms, and which one works depends on the name.
+`POLARIS_STORAGE_R2_<NAME>_ACCESS_KEY` and `POLARIS_STORAGE_R2_<NAME>_SECRET_KEY` bind a storage
+name that is one lowercase `[a-z0-9]+` segment: `POLARIS_STORAGE_R2_RESEARCH_ACCESS_KEY` binds
+`research`. A name containing `-`, `_` or `.` does not bind through this form.
+`POLARIS_STORAGE_R2_TEAM_A_ACCESS_KEY` binds none of `team-a`, `team_a` or `team.a`. Set such a
+name with the property name itself as the variable name, which Kubernetes and podman both accept:
+
+```yaml
+env:
+  - name: polaris.storage.r2.team-c.access-key
+    value: <parent access key id>
+  - name: polaris.storage.r2.team-c.secret-key
+    valueFrom: { secretKeyRef: { name: r2-team-c, key: secret-key } }
+```
+
+A catalog's `storageName` is matched case-sensitively against the entry, so `RESEARCH` does not
+find the entry `research`. Prefer lowercase alphanumeric storage names: they keep the underscore
+form available, and a secret config source is the other way to set any name.
+
 The parent token is separate from enabling the type: both are needed before a catalog can vend.
 
 ## Catalog configuration
@@ -89,11 +108,16 @@ The parent token is separate from enabling the type: both are needed before a ca
 
 - `accountId` (required): the Cloudflare account id, 32 lowercase hex characters. The endpoint
   `https://<accountId>.r2.cloudflarestorage.com` and the audience of vended credentials derive
-  from it.
+  from it. The `aud` claim binds a credential to the account and not to a jurisdiction host: R2
+  accepts the account's default and jurisdictional hosts interchangeably. What isolates
+  jurisdictions is their separate bucket namespaces, plus the credential's `bucket` claim.
 - `jurisdiction` (optional): `eu`, `fedramp`, or `us`. Changes the host to
   `<accountId>.<jurisdiction>.r2.cloudflarestorage.com`. A bucket's jurisdiction is fixed at
   creation, so this field cannot be changed on an existing catalog (nor can `accountId`) unless
-  `ALLOW_UNRESTRICTED_STORAGE_CONFIG_ROLE_CHANGES` is enabled.
+  `ALLOW_UNRESTRICTED_STORAGE_CONFIG_ROLE_CHANGES` is enabled. Only these three values are
+  jurisdictions. A location hint such as `WEUR` or `EEUR` is not one: a bucket created with a
+  location hint lives in the default jurisdiction and answers on the default endpoint. Each
+  jurisdiction keeps its own bucket namespace, so one catalog covers exactly one jurisdiction.
 - `allowedLocations`: `s3://` or `s3a://` locations. A catalog may span buckets, but one table's
   locations must sit in one bucket: R2 credentials cannot span buckets. Lay tables out
   bucket-per-table or bucket-per-namespace.
@@ -121,9 +145,10 @@ R2 checks the signed token when data is accessed, not when Polaris vends it.
 
 | Client symptom | Likely cause |
 |---|---|
-| `AccessDenied` on every object | parent token lacks permission on the bucket, or wrong `jurisdiction` (audience mismatch) |
+| `AccessDenied` on every object | parent token lacks permission on the bucket |
 | `AccessDenied` on objects under another table | expected: credentials are prefix-scoped |
-| `InvalidToken` / signature errors | server clock skew — Polaris hosts need NTP |
+| 404 `NoSuchBucket`, or 400 `NoSuchBucketException` at `createTable` | the catalog's `jurisdiction` does not match the bucket's. Buckets live in one jurisdiction's namespace, so R2 answers that a bucket from another jurisdiction does not exist. A location hint such as `WEUR` is not a jurisdiction |
+| 403 `SignatureDoesNotMatch` | the credential is past its `exp`, or it was signed with a parent secret that has since been rotated, or the Polaris host's clock has skewed — Polaris hosts need NTP. R2 reports expiry as a signature error and returns no `Expired*` or `InvalidToken` code, so client retry logic must not wait for one |
 | 400 `No default R2 parent token is configured` | set `polaris.storage.r2.*` or the catalog's `storageName` entry |
 | 400 `R2 credentials are scoped to one bucket` | a table's locations span buckets |
 

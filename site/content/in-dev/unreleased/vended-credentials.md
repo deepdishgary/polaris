@@ -80,7 +80,10 @@ read and list, or `object-read-write` when the caller may write or delete. An R2
 credential binds to a single bucket, so all of one table's locations must sit in one bucket. The
 endpoint is `https://<accountId>.r2.cloudflarestorage.com`, or
 `https://<accountId>.<jurisdiction>.r2.cloudflarestorage.com` when the catalog sets a jurisdiction;
-Polaris also emits `client.region=auto` and `s3.path-style-access=true`.
+Polaris also emits `client.region=auto` and `s3.path-style-access=true`. On the wire
+`s3.session-token` is the base64 encoding of `jwt/<signed JWT>` rather than a bare JWT; clients
+pass it through unchanged, so reading the claims while debugging takes a base64 decode and then a
+strip of the `jwt/` prefix.
 
 {{% include-config-section "storage-r2" %}}
 
