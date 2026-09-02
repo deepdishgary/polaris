@@ -54,6 +54,9 @@ request adding CHANGELOG notes for breaking (!) changes and possibly other secti
   ```
   Postgres and H2 are unaffected.
 
+- R2 allowed locations containing an empty path segment (`//`) are rejected, including when an
+  existing catalog is loaded. Check stored R2 catalogs before upgrading.
+
 ### Breaking changes
 
 - Concurrent table commits that hit a stale sequence number now return a retryable `409` instead of a fatal `400`, for both single-table commits and `commitTransaction`.
