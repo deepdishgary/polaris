@@ -116,7 +116,12 @@ public class R2CredentialsStorageIntegration
             : "R2 storage name '" + storageName + "' is not configured on the server");
   }
 
-  /** Mint a fresh {@link StorageAccessConfig} for the given key. Called by the cache on miss. */
+  /**
+   * Mint a fresh {@link StorageAccessConfig} for the given key. Called by the cache on miss, so the
+   * INFO line below is one per mint rather than one per credential request: a request served from
+   * the cache logs nothing. The line names the credential's shape and never its material — no key
+   * id, no secret, no session token, no JWT.
+   */
   static StorageAccessConfig compute(R2StorageCredentialCacheKey key) {
     R2StorageConfigurationInfo config = key.storageConfig();
     R2TemporaryCredentialSigner.Credential credential =
@@ -131,6 +136,14 @@ public class R2CredentialsStorageIntegration
                 key.scope(),
                 key.ttl(),
                 key.clock().instant()));
+    LOGGER.info(
+        "Minted R2 credential: storageName={} bucket={} prefixes={} scope={} ttl={}s expiresAt={}",
+        config.getStorageName() == null ? "<default>" : config.getStorageName(),
+        key.bucket(),
+        key.prefixes().size(),
+        key.scope(),
+        key.ttl().toSeconds(),
+        credential.expiresAt());
     StorageAccessConfig.Builder builder = StorageAccessConfig.builder();
     builder.put(StorageAccessProperty.R2_KEY_ID, credential.accessKeyId());
     builder.put(StorageAccessProperty.R2_SECRET_KEY, credential.secretAccessKey());

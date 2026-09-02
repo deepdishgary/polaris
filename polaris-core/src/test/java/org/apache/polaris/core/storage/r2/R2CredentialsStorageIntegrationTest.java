@@ -23,6 +23,10 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatCode;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
+import ch.qos.logback.classic.Level;
+import ch.qos.logback.classic.Logger;
+import ch.qos.logback.classic.spi.ILoggingEvent;
+import ch.qos.logback.core.read.ListAppender;
 import java.time.Clock;
 import java.time.Instant;
 import java.time.ZoneOffset;
@@ -40,6 +44,7 @@ import org.apache.polaris.core.storage.StorageAccessProperty;
 import org.apache.polaris.core.storage.cache.StorageCredentialCache;
 import org.apache.polaris.core.storage.cache.StorageCredentialCacheConfig;
 import org.junit.jupiter.api.Test;
+import org.slf4j.LoggerFactory;
 
 class R2CredentialsStorageIntegrationTest {
 
@@ -220,6 +225,87 @@ class R2CredentialsStorageIntegrationTest {
                 integration.getStorageAccessConfig(
                     grants, Optional.empty(), CredentialVendingContext.empty()))
         .doesNotThrowAnyException();
+  }
+
+  @Test
+  void mintIsLoggedWithoutCredentialMaterial() {
+    String parentSecret = "parent-secret-must-not-be-logged-9f3c";
+    R2ParentTokenResolver resolver =
+        name -> Optional.of(new R2ParentToken("parent-key-id", parentSecret));
+    Logger logger = (Logger) LoggerFactory.getLogger(R2CredentialsStorageIntegration.class);
+    ListAppender<ILoggingEvent> appender = new ListAppender<>();
+    appender.start();
+    Level original = logger.getLevel();
+    logger.setLevel(Level.INFO);
+    logger.addAppender(appender);
+    StorageAccessConfig cfg;
+    try {
+      R2CredentialsStorageIntegration integration =
+          new R2CredentialsStorageIntegration(resolver, CLOCK, null, CONFIG, REALM_CONFIG);
+      cfg =
+          integration.getStorageAccessConfig(
+              GRANTS, Optional.empty(), CredentialVendingContext.empty());
+    } finally {
+      logger.detachAppender(appender);
+      appender.stop();
+      logger.setLevel(original);
+    }
+    String sessionToken = cfg.credentials().get(StorageAccessProperty.R2_TOKEN.getPropertyName());
+    String derivedSecret =
+        cfg.credentials().get(StorageAccessProperty.R2_SECRET_KEY.getPropertyName());
+    assertThat(sessionToken).isNotBlank();
+    assertThat(derivedSecret).isNotBlank();
+    assertThat(appender.list)
+        .extracting(ILoggingEvent::getFormattedMessage)
+        .anySatisfy(
+            message ->
+                assertThat(message)
+                    .contains("Minted R2 credential")
+                    .contains("storageName=primary")
+                    .contains("bucket=bucket")
+                    .contains("prefixes=1")
+                    .contains("scope=object-read-write")
+                    .contains("ttl=")
+                    .contains("expiresAt="))
+        .allSatisfy(
+            message ->
+                assertThat(message)
+                    .doesNotContain(parentSecret)
+                    .doesNotContain(sessionToken)
+                    .doesNotContain(derivedSecret));
+  }
+
+  @Test
+  void mintOfTheDefaultStorageNameIsLoggedAsDefault() {
+    R2StorageConfigurationInfo unnamed =
+        R2StorageConfigurationInfo.builder()
+            .accountId(ACCOUNT)
+            .addAllowedLocations("s3://bucket/wh/")
+            .build();
+    Logger logger = (Logger) LoggerFactory.getLogger(R2CredentialsStorageIntegration.class);
+    ListAppender<ILoggingEvent> appender = new ListAppender<>();
+    appender.start();
+    Level original = logger.getLevel();
+    logger.setLevel(Level.INFO);
+    logger.addAppender(appender);
+    try {
+      R2CredentialsStorageIntegration integration =
+          new R2CredentialsStorageIntegration(
+              name -> Optional.of(new R2ParentToken("pk", "ps")),
+              CLOCK,
+              null,
+              unnamed,
+              REALM_CONFIG);
+      integration.getStorageAccessConfig(
+          GRANTS, Optional.empty(), CredentialVendingContext.empty());
+    } finally {
+      logger.detachAppender(appender);
+      appender.stop();
+      logger.setLevel(original);
+    }
+    assertThat(appender.list)
+        .extracting(ILoggingEvent::getFormattedMessage)
+        .anySatisfy(message -> assertThat(message).contains("storageName=<default>"));
   }
 
   @Test
