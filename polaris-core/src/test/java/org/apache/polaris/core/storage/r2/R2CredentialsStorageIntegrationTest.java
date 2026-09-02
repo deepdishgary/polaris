@@ -20,6 +20,7 @@ package org.apache.polaris.core.storage.r2;
 
 import static org.apache.polaris.core.config.RealmConfigurationSource.EMPTY_CONFIG;
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatCode;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import java.time.Clock;
@@ -145,6 +146,80 @@ class R2CredentialsStorageIntegrationTest {
         .hasMessageContaining("c.ns.t")
         .hasMessageContaining("bucket")
         .hasMessageContaining("other");
+  }
+
+  @Test
+  void uniformReadOnlyGrantsVendReadOnly() {
+    List<LocationGrant> grants =
+        List.of(
+            new LocationGrant(Set.of("s3://bucket/wh/db/t/"), Set.of(PolarisStorageActions.READ)),
+            new LocationGrant(Set.of("s3://bucket/wh/db/u/"), Set.of(PolarisStorageActions.LIST)));
+    assertThat(R2CredentialsStorageIntegration.scopeFor(grants))
+        .isEqualTo(R2TemporaryCredentialSigner.SCOPE_OBJECT_READ_ONLY);
+    R2CredentialsStorageIntegration integration =
+        new R2CredentialsStorageIntegration(RESOLVER, CLOCK, null, CONFIG, REALM_CONFIG);
+    assertThatCode(
+            () ->
+                integration.getStorageAccessConfig(
+                    grants, Optional.empty(), CredentialVendingContext.empty()))
+        .doesNotThrowAnyException();
+  }
+
+  @Test
+  void uniformWriteCapableGrantsVendReadWrite() {
+    List<LocationGrant> grants =
+        List.of(
+            new LocationGrant(Set.of("s3://bucket/wh/db/t/"), Set.of(PolarisStorageActions.WRITE)),
+            new LocationGrant(Set.of("s3://bucket/wh/db/u/"), Set.of(PolarisStorageActions.ALL)));
+    assertThat(R2CredentialsStorageIntegration.scopeFor(grants))
+        .isEqualTo(R2TemporaryCredentialSigner.SCOPE_OBJECT_READ_WRITE);
+    R2CredentialsStorageIntegration integration =
+        new R2CredentialsStorageIntegration(RESOLVER, CLOCK, null, CONFIG, REALM_CONFIG);
+    assertThatCode(
+            () ->
+                integration.getStorageAccessConfig(
+                    grants, Optional.empty(), CredentialVendingContext.empty()))
+        .doesNotThrowAnyException();
+  }
+
+  @Test
+  void mixedReadOnlyAndWriteGrantsAreRejected() {
+    List<LocationGrant> grants =
+        List.of(
+            new LocationGrant(Set.of("s3://bucket/wh/db/t/"), Set.of(PolarisStorageActions.READ)),
+            new LocationGrant(Set.of("s3://bucket/wh/db/u/"), Set.of(PolarisStorageActions.WRITE)));
+    R2CredentialsStorageIntegration integration =
+        new R2CredentialsStorageIntegration(RESOLVER, CLOCK, null, CONFIG, REALM_CONFIG);
+    CredentialVendingContext context =
+        CredentialVendingContext.builder()
+            .realm(Optional.of("realm"))
+            .catalogName(Optional.of("c"))
+            .namespace(Optional.of("ns"))
+            .tableName(Optional.of("t"))
+            .build();
+    assertThatThrownBy(() -> integration.getStorageAccessConfig(grants, Optional.empty(), context))
+        .isInstanceOf(IllegalArgumentException.class)
+        .hasMessage(
+            "R2 credentials carry one scope for all prefixes; grants with mixed read-only and"
+                + " write actions cannot be vended together for table c.ns.t");
+  }
+
+  @Test
+  void oneGrantMixingReadAndWriteActionsVendsReadWrite() {
+    List<LocationGrant> grants =
+        List.of(
+            new LocationGrant(
+                Set.of("s3://bucket/wh/db/t/"),
+                Set.of(PolarisStorageActions.READ, PolarisStorageActions.WRITE)));
+    assertThat(R2CredentialsStorageIntegration.scopeFor(grants))
+        .isEqualTo(R2TemporaryCredentialSigner.SCOPE_OBJECT_READ_WRITE);
+    R2CredentialsStorageIntegration integration =
+        new R2CredentialsStorageIntegration(RESOLVER, CLOCK, null, CONFIG, REALM_CONFIG);
+    assertThatCode(
+            () ->
+                integration.getStorageAccessConfig(
+                    grants, Optional.empty(), CredentialVendingContext.empty()))
+        .doesNotThrowAnyException();
   }
 
   @Test

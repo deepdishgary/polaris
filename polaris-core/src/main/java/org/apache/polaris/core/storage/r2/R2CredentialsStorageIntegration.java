@@ -84,6 +84,7 @@ public class R2CredentialsStorageIntegration
             .resolve(config.getStorageName())
             .orElseThrow(() -> noParentToken(config.getStorageName(), context));
     Duration ttl = Duration.ofSeconds(realmConfig().getConfig(STORAGE_CREDENTIAL_DURATION_SECONDS));
+    requireUniformScope(grants, context);
     return R2StorageCredentialCacheKey.of(
         context.realm().orElse(""),
         config,
@@ -230,9 +231,36 @@ public class R2CredentialsStorageIntegration
   }
 
   /**
+   * Rejects a grant list that mixes read-only grants with write-capable ones. R2 attaches one scope
+   * to the whole credential, so such a list can only be served by widening the read-only prefixes
+   * to read-write, which hands out more than Polaris authorized. One grant per vend is the only
+   * shape the callers produce today, but the SPI accepts a list, so fail closed rather than widen.
+   */
+  private static void requireUniformScope(
+      List<LocationGrant> grants, CredentialVendingContext context) {
+    if (grants.size() < 2) {
+      return;
+    }
+    long writeCapable =
+        grants.stream()
+            .filter(grant -> grant.actions().stream().anyMatch(WRITE_ACTIONS::contains))
+            .count();
+    if (writeCapable != 0 && writeCapable != grants.size()) {
+      throw new IllegalArgumentException(
+          "R2 credentials carry one scope for all prefixes; grants with mixed read-only and write"
+              + " actions cannot be vended together"
+              + forTable(context));
+    }
+  }
+
+  /**
    * The single R2 scope covering all grants. R2 attaches one scope to the whole credential, so a
-   * WRITE, DELETE or ALL action in any grant yields {@code object-read-write} for every prefix;
-   * only an all-read set yields {@code object-read-only}.
+   * WRITE, DELETE or ALL action yields {@code object-read-write} for every prefix; only an all-read
+   * set yields {@code object-read-only}.
+   *
+   * <p>{@link #requireUniformScope} runs first, so this widening applies only within one grant, or
+   * across grants that are uniformly write-capable. A list that mixes a read-only grant with a
+   * write-capable one never reaches here.
    */
   static String scopeFor(List<LocationGrant> grants) {
     boolean write =

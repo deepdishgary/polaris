@@ -86,6 +86,29 @@ public abstract class R2StorageConfigurationInfo extends PolarisStorageConfigura
     return URI.create("https://" + getEndpointHost());
   }
 
+  /**
+   * Rejects an allowed location whose path holds an empty segment, on top of the base prefix check.
+   *
+   * <p>This guards a gap between two upstream location checks that disagree on trailing slashes.
+   * {@code PolarisAdminService.catalogOverlapsWithExistingCatalog} compares locations with a raw
+   * {@code StorageLocation.isChildOf}, so {@code s3://bucket//} does not overlap an existing {@code
+   * s3://bucket/local/}; {@code StorageLocationValidator.validateAllowedLocations} then trims one
+   * trailing slash, so the same location admits any table in the bucket. A catalog created with
+   * {@code s3://bucket//} therefore passes the overlap check and vends credentials over another
+   * catalog's prefixes. Rejecting the empty segment at configuration time closes that path for R2.
+   */
+  @Override
+  protected void validatePrefixForStorageType(String loc) {
+    super.validatePrefixForStorageType(loc);
+    String path = loc.substring(loc.indexOf("://") + 3);
+    if (path.contains("//")) {
+      throw new IllegalArgumentException(
+          "R2 allowed location '"
+              + loc
+              + "' contains an empty path segment ('//'); use one slash between segments");
+    }
+  }
+
   @Value.Check
   @Override
   protected void check() {

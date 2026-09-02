@@ -27,6 +27,7 @@ import org.apache.polaris.core.storage.PolarisStorageConfigurationInfo;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.MethodSource;
+import org.junit.jupiter.params.provider.ValueSource;
 
 class R2StorageConfigurationInfoTest {
 
@@ -111,6 +112,31 @@ class R2StorageConfigurationInfoTest {
                     .build())
         .isInstanceOf(IllegalArgumentException.class)
         .hasMessageContaining("Location prefix not allowed");
+  }
+
+  @ParameterizedTest
+  @ValueSource(strings = {"s3://b//", "s3://b//x/", "s3://b/x//y/"})
+  void rejectsEmptyPathSegmentInAllowedLocation(String location) {
+    assertThatThrownBy(
+            () ->
+                R2StorageConfigurationInfo.builder()
+                    .accountId(ACCOUNT)
+                    .addAllowedLocations(location)
+                    .build())
+        .isInstanceOf(IllegalArgumentException.class)
+        .hasMessageContaining("empty path segment")
+        .hasMessageContaining(location);
+  }
+
+  @ParameterizedTest
+  @ValueSource(strings = {"s3://b/x/", "s3a://b/x/"})
+  void acceptsAllowedLocationWithSingleSlashes(String location) {
+    R2StorageConfigurationInfo info =
+        R2StorageConfigurationInfo.builder()
+            .accountId(ACCOUNT)
+            .addAllowedLocations(location)
+            .build();
+    assertThat(info.getAllowedLocations()).containsExactly(location);
   }
 
   @Test
