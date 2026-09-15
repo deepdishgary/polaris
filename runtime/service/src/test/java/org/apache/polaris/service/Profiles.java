@@ -71,10 +71,17 @@ public final class Profiles {
           "true",
           "polaris.features.\"ENFORCE_PRINCIPAL_CREDENTIAL_ROTATION_REQUIRED_CHECKING\"",
           "true",
+          // CLOUDFLARE_R2 is opt-in, and the list has no implicit member, so STS is repeated.
+          "polaris.features.\"SUPPORTED_S3_CREDENTIAL_VENDING_MECHANISMS\"",
+          "[\"STS\",\"CLOUDFLARE_R2\"]",
           "polaris.storage.gcp.token",
           "token",
           "polaris.storage.gcp.lifespan",
-          "PT1H");
+          "PT1H",
+          "polaris.storage.cloudflare-r2.access-key",
+          "r2-it-dummy-key",
+          "polaris.storage.cloudflare-r2.secret-key",
+          "r2-it-dummy-secret");
     }
   }
 

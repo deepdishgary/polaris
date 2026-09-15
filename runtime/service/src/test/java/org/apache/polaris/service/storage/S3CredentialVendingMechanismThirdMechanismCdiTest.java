@@ -65,8 +65,9 @@ import org.junit.jupiter.api.extension.ExtendWith;
  * {@code @Nested} test classes ({@code io.quarkus.test.junit.QuarkusTestExtension}: "@Nested tests
  * may not contain @TestProfile annotations"), and the two scenarios need different application
  * instances regardless: {@code getEnabledAlternatives()} is profile-wide, and {@link
- * S3CredentialVendingMechanismCdiTest} asserts {@code availableIds()} is exactly {@code {STS}} in
- * its own application instance, which this test's third mechanism would otherwise widen.
+ * S3CredentialVendingMechanismCdiTest} asserts {@code availableIds()} is exactly {@code
+ * {CLOUDFLARE_R2, STS}} in its own application instance, which this test's third mechanism would
+ * otherwise widen.
  */
 @QuarkusTest
 @TestProfile(ThirdMechanismProfile.class)

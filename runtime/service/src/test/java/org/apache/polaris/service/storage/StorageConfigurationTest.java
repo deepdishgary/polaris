@@ -35,6 +35,8 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.OptionalInt;
 import java.util.function.Supplier;
+import org.apache.polaris.core.storage.aws.r2.R2ParentToken;
+import org.apache.polaris.core.storage.aws.r2.R2ParentTokenResolver;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
 import org.mockito.MockedStatic;
@@ -52,6 +54,25 @@ public class StorageConfigurationTest {
   private static final String STORAGE_ACCESS_KEY = "storage-access-key";
   private static final String STORAGE_SECRET_KEY = "storage-secret-key";
   private static final Duration TEST_TOKEN_LIFESPAN = Duration.ofMinutes(20);
+
+  private static StorageConfiguration.CloudflareR2StorageConfig emptyCloudflareR2Config() {
+    return new StorageConfiguration.CloudflareR2StorageConfig() {
+      @Override
+      public Optional<String> accessKey() {
+        return Optional.empty();
+      }
+
+      @Override
+      public Optional<String> secretKey() {
+        return Optional.empty();
+      }
+
+      @Override
+      public Map<String, StorageConfiguration.CloudflareR2NamedStorageConfig> storages() {
+        return Map.of();
+      }
+    };
+  }
 
   private StorageConfiguration configWithAwsCredentialsAndGcpToken() {
     return new StorageConfiguration() {
@@ -73,6 +94,11 @@ public class StorageConfigurationTest {
             return Map.of();
           }
         };
+      }
+
+      @Override
+      public CloudflareR2StorageConfig cloudflareR2() {
+        return emptyCloudflareR2Config();
       }
 
       @Override
@@ -147,6 +173,11 @@ public class StorageConfigurationTest {
             return Map.of();
           }
         };
+      }
+
+      @Override
+      public CloudflareR2StorageConfig cloudflareR2() {
+        return emptyCloudflareR2Config();
       }
 
       @Override
@@ -233,6 +264,11 @@ public class StorageConfigurationTest {
                 });
           }
         };
+      }
+
+      @Override
+      public CloudflareR2StorageConfig cloudflareR2() {
+        return emptyCloudflareR2Config();
       }
 
       @Override
@@ -388,5 +424,148 @@ public class StorageConfigurationTest {
     assertThat(credentialsProvider.resolveCredentials().accessKeyId()).isEqualTo(TEST_ACCESS_KEY);
     assertThat(credentialsProvider.resolveCredentials().secretAccessKey())
         .isEqualTo(TEST_SECRET_KEY);
+  }
+
+  /** A configuration whose only interesting mapping is the Cloudflare R2 parent-token block. */
+  private static StorageConfiguration cloudflareR2Config(
+      Optional<String> defaultKey,
+      Optional<String> defaultSecret,
+      Map<String, StorageConfiguration.CloudflareR2NamedStorageConfig> named) {
+    StorageConfiguration.CloudflareR2StorageConfig r2 =
+        new StorageConfiguration.CloudflareR2StorageConfig() {
+          @Override
+          public Optional<String> accessKey() {
+            return defaultKey;
+          }
+
+          @Override
+          public Optional<String> secretKey() {
+            return defaultSecret;
+          }
+
+          @Override
+          public Map<String, StorageConfiguration.CloudflareR2NamedStorageConfig> storages() {
+            return named;
+          }
+        };
+    return new StorageConfiguration() {
+      @Override
+      public AwsStorageConfig aws() {
+        throw new UnsupportedOperationException();
+      }
+
+      @Override
+      public CloudflareR2StorageConfig cloudflareR2() {
+        return r2;
+      }
+
+      @Override
+      public Optional<String> gcpAccessToken() {
+        return Optional.empty();
+      }
+
+      @Override
+      public Optional<Duration> gcpAccessTokenLifespan() {
+        return Optional.empty();
+      }
+
+      @Override
+      public OptionalInt clientsCacheMaxSize() {
+        return OptionalInt.empty();
+      }
+
+      @Override
+      public OptionalInt maxHttpConnections() {
+        return OptionalInt.empty();
+      }
+
+      @Override
+      public Optional<Duration> readTimeout() {
+        return Optional.empty();
+      }
+
+      @Override
+      public Optional<Duration> connectTimeout() {
+        return Optional.empty();
+      }
+
+      @Override
+      public Optional<Duration> connectionAcquisitionTimeout() {
+        return Optional.empty();
+      }
+
+      @Override
+      public Optional<Duration> connectionMaxIdleTime() {
+        return Optional.empty();
+      }
+
+      @Override
+      public Optional<Duration> connectionTimeToLive() {
+        return Optional.empty();
+      }
+
+      @Override
+      public Optional<Boolean> expectContinueEnabled() {
+        return Optional.empty();
+      }
+    };
+  }
+
+  private static StorageConfiguration.CloudflareR2NamedStorageConfig named(
+      String key, String secret) {
+    return new StorageConfiguration.CloudflareR2NamedStorageConfig() {
+      @Override
+      public String accessKey() {
+        return key;
+      }
+
+      @Override
+      public String secretKey() {
+        return secret;
+      }
+    };
+  }
+
+  @Test
+  void cloudflareR2ResolverUsesDefaultEntryWhenNoStorageName() {
+    R2ParentTokenResolver resolver =
+        cloudflareR2Config(Optional.of("dk"), Optional.of("ds"), Map.of())
+            .cloudflareR2ParentTokenResolver();
+    assertThat(resolver.resolve(null)).contains(new R2ParentToken("dk", "ds"));
+    assertThat(resolver.resolve("missing")).isEmpty();
+  }
+
+  @Test
+  void cloudflareR2ResolverUsesNamedEntryAndTreatsHalfSetDefaultAsAbsent() {
+    R2ParentTokenResolver resolver =
+        cloudflareR2Config(
+                Optional.of("only-key"), Optional.empty(), Map.of("prod", named("nk", "ns")))
+            .cloudflareR2ParentTokenResolver();
+    assertThat(resolver.resolve("prod")).contains(new R2ParentToken("nk", "ns"));
+    assertThat(resolver.resolve(null)).isEmpty();
+  }
+
+  /**
+   * The bean warns about a half-set default entry at construction; the resolution behaviour is
+   * unchanged either way. Both halves of the branch are exercised so the warning cannot throw.
+   */
+  @Test
+  void cloudflareR2ResolverBeanTreatsEitherHalfSetDefaultAsAbsent() {
+    R2ParentTokenResolver missingSecret =
+        new R2ParentTokenResolverImpl(
+            cloudflareR2Config(
+                Optional.of("only-key"), Optional.empty(), Map.of("prod", named("nk", "ns"))));
+    assertThat(missingSecret.resolve(null)).isEmpty();
+    assertThat(missingSecret.resolve("prod")).contains(new R2ParentToken("nk", "ns"));
+
+    R2ParentTokenResolver missingKey =
+        new R2ParentTokenResolverImpl(
+            cloudflareR2Config(Optional.empty(), Optional.of("only-secret"), Map.of()));
+    assertThat(missingKey.resolve(null)).isEmpty();
+
+    R2ParentTokenResolver bothSet =
+        new R2ParentTokenResolverImpl(
+            cloudflareR2Config(Optional.of("dk"), Optional.of("ds"), Map.of()));
+    assertThat(bothSet.resolve(null)).contains(new R2ParentToken("dk", "ds"));
   }
 }

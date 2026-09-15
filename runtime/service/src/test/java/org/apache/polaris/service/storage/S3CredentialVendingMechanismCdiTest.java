@@ -81,19 +81,17 @@ import org.junit.jupiter.api.extension.ExtendWith;
  * past authorization and reach {@code initializeCatalog()}'s gate.
  *
  * <p>The "not available in this server" assertions target a mechanism identifier the server never
- * ships, {@code UNINSTALLED_MECHANISM}, not {@code CLOUDFLARE_R2}: once a real bean is installed
- * for {@code CLOUDFLARE_R2} elsewhere in this codebase, every one of those assertions would
- * otherwise start failing. Exactly one {@code CLOUDFLARE_R2} assertion remains, on a separately,
- * directly created (never-populated) catalog: it is created (201) and its namespace listing is 400
- * "not available in this server"; that is the one assertion expected to flip once a {@code
- * CLOUDFLARE_R2} bean exists.
+ * ships, {@code UNINSTALLED_MECHANISM}, not {@code CLOUDFLARE_R2}: the real {@code CLOUDFLARE_R2}
+ * bean is installed and configured with a default parent token in this profile, so the one {@code
+ * CLOUDFLARE_R2} assertion (a separately, directly created, never-populated catalog) shows the
+ * mechanism actually vends: the catalog is created (201) and its namespace listing serves (200).
  *
- * <p>This class installs only the {@code STS} mechanism (the server's real, shipped bean) and
- * allowlists {@code CLOUDFLARE_R2} and {@code UNINSTALLED_MECHANISM} without installing either.
- * {@link S3CredentialVendingMechanismThirdMechanismCdiTest} swaps in a test-only mechanism, under
- * its own profile, to prove the registry and the gates work for a mechanism the server itself does
- * not ship. Quarkus does not allow {@code @TestProfile} on a {@code @Nested} class, so that
- * scenario cannot share this file: it needs its own application instance, since {@code
+ * <p>This class installs the {@code STS} and {@code CLOUDFLARE_R2} mechanisms (the server's real,
+ * shipped beans) and allowlists {@code UNINSTALLED_MECHANISM} without installing it. {@link
+ * S3CredentialVendingMechanismThirdMechanismCdiTest} swaps in a test-only mechanism, under its own
+ * profile, to prove the registry and the gates work for a mechanism the server itself does not
+ * ship. Quarkus does not allow {@code @TestProfile} on a {@code @Nested} class, so that scenario
+ * cannot share this file: it needs its own application instance, since {@code
  * getEnabledAlternatives()} is a profile-wide, one-instance setting, and this class asserts {@code
  * availableIds()} is exactly {@code {STS}}.
  */
@@ -104,8 +102,6 @@ class S3CredentialVendingMechanismCdiTest {
 
   private static final String R2_ENDPOINT =
       "https://0123456789abcdef0123456789abcdef.r2.cloudflarestorage.com";
-  private static final String NOT_AVAILABLE_R2 =
-      "S3 credential vending mechanism CLOUDFLARE_R2 is not available in this server";
   private static final String UNINSTALLED_MECHANISM = "UNINSTALLED_MECHANISM";
   private static final String NOT_AVAILABLE_UNINSTALLED =
       "S3 credential vending mechanism UNINSTALLED_MECHANISM is not available in this server";
@@ -132,6 +128,8 @@ class S3CredentialVendingMechanismCdiTest {
           Map.entry(
               "polaris.features.\"SUPPORTED_S3_CREDENTIAL_VENDING_MECHANISMS\"",
               "[\"STS\",\"CLOUDFLARE_R2\",\"" + UNINSTALLED_MECHANISM + "\"]"),
+          Map.entry("polaris.storage.cloudflare-r2.access-key", "cdi-r2-parent-key"),
+          Map.entry("polaris.storage.cloudflare-r2.secret-key", "cdi-r2-parent-secret"),
           Map.entry("polaris.event-listener.type", "test"),
           Map.entry("polaris.authentication.token-broker.type", "symmetric-key"),
           Map.entry("polaris.authentication.token-broker.symmetric-key.secret", "secret"));
@@ -142,20 +140,21 @@ class S3CredentialVendingMechanismCdiTest {
 
   /**
    * With the default readiness settings (no {@code polaris.readiness.ignore-severe-issues}
-   * override) and two mechanisms allowlisted but not installed, the application starts, only {@code
-   * STS} is available, a {@code CLOUDFLARE_R2} catalog is still created and frozen, and every route
-   * that would open an uninstalled-mechanism catalog or vend for it refuses with "not available in
-   * this server": the Iceberg, generic-table and policy routes alike, and a storage-access
-   * resolution under {@code SKIP_CREDENTIAL_SUBSCOPING_INDIRECTION} too. An STS catalog in the same
-   * realm is untouched throughout.
+   * override) and {@code UNINSTALLED_MECHANISM} allowlisted but not installed, the application
+   * starts, {@code STS} and {@code CLOUDFLARE_R2} are both available, a {@code CLOUDFLARE_R2}
+   * catalog actually vends, and every route that would open an uninstalled-mechanism catalog or
+   * vend for it refuses with "not available in this server": the Iceberg, generic-table and policy
+   * routes alike, and a storage-access resolution under {@code
+   * SKIP_CREDENTIAL_SUBSCOPING_INDIRECTION} too. An STS catalog in the same realm is untouched
+   * throughout.
    */
   @Test
   void stsOnlyDiscoveryAndUninstalledMechanismsAreRefusedEverywhere(
       PolarisApiEndpoints endpoints, ClientCredentials credentials) throws Exception {
-    // The application started at all, with two mechanisms allowlisted and neither installed, and
-    // default readiness settings, is itself part of what this proves; availableIds() shows only
-    // STS installed.
-    assertThat(mechanisms.availableIds()).containsExactly("STS");
+    // The application started at all, with UNINSTALLED_MECHANISM allowlisted and not installed,
+    // and default readiness settings, is itself part of what this proves; availableIds() shows
+    // both real, shipped beans installed, sorted.
+    assertThat(mechanisms.availableIds()).containsExactly("CLOUDFLARE_R2", "STS");
 
     try (PolarisClient client = PolarisClient.polarisClient(endpoints)) {
       String adminToken = client.obtainToken(credentials);
@@ -169,11 +168,13 @@ class S3CredentialVendingMechanismCdiTest {
       String uninstalledCatalog = "cdi-uninstalled-cat";
 
       // The one CLOUDFLARE_R2 assertion this class keeps: create-and-201, and the catalog-root
-      // namespace list, which needs no pre-existing namespace since the root always resolves.
+      // namespace list, which needs no pre-existing namespace since the root always resolves, now
+      // serves: the real bean is installed and configured with a default parent token.
       createCloudflareR2Catalog(managementApi, bareR2Catalog);
-      assertRefused(
-          catalogApi.request("v1/{cat}/namespaces", Map.of("cat", bareR2Catalog)).get(),
-          NOT_AVAILABLE_R2);
+      try (Response r =
+          catalogApi.request("v1/{cat}/namespaces", Map.of("cat", bareR2Catalog)).get()) {
+        assertThat(r.getStatus()).isEqualTo(Response.Status.OK.getStatusCode());
+      }
 
       // The STS catalog: content created normally, left untouched for the rest of the test.
       createStsCatalog(managementApi, stsCatalog);

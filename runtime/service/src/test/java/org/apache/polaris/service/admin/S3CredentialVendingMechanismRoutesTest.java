@@ -25,11 +25,13 @@ import jakarta.ws.rs.core.Response;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import org.apache.iceberg.catalog.Namespace;
 import org.apache.iceberg.exceptions.ValidationException;
 import org.apache.iceberg.inmemory.InMemoryFileIO;
 import org.apache.iceberg.rest.requests.CreateNamespaceRequest;
 import org.apache.iceberg.rest.requests.CreateTableRequest;
+import org.apache.iceberg.rest.responses.LoadTableResponse;
 import org.apache.polaris.core.admin.model.AuthenticationParameters;
 import org.apache.polaris.core.admin.model.AwsStorageConfigInfo;
 import org.apache.polaris.core.admin.model.Catalog;
@@ -42,6 +44,7 @@ import org.apache.polaris.core.admin.model.OAuthClientCredentialsParameters;
 import org.apache.polaris.core.admin.model.PolarisCatalog;
 import org.apache.polaris.core.admin.model.StorageConfigInfo;
 import org.apache.polaris.core.admin.model.UpdateCatalogRequest;
+import org.apache.polaris.core.storage.aws.r2.R2ParentToken;
 import org.apache.polaris.service.TestServices;
 import org.apache.polaris.service.catalog.io.FileIOFactory;
 import org.junit.jupiter.api.Test;
@@ -49,13 +52,19 @@ import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.ValueSource;
 
 /**
- * Only STS is installed in {@link TestServices}, so every Iceberg route that opens a CLOUDFLARE_R2
- * catalog is refused at initialization, namespace reads included, with or without
+ * By default only STS is installed in {@link TestServices}, so every Iceberg route that opens a
+ * CLOUDFLARE_R2 catalog is refused at initialization, namespace reads included, with or without
  * SKIP_CREDENTIAL_SUBSCOPING_INDIRECTION; an STS catalog in the same realm is untouched. The R2
  * catalog is produced by updating an STS catalog under
  * ALLOW_UNRESTRICTED_STORAGE_CONFIG_ROLE_CHANGES, because nothing can be created inside an R2
- * catalog through the REST API in this server. Every catalog gets its own allowed location:
+ * catalog while the mechanism has no installed bean. Every catalog gets its own allowed location:
  * upstream rejects overlapping catalog locations at create and update.
+ *
+ * <p>Once the mechanism is actually installed ({@link #servicesWithR2Installed}, a real
+ * parent-token resolver configured), a CLOUDFLARE_R2 catalog can be created directly and every
+ * route serves; a delegated load actually vends R2 temporary credentials. The realm kill switch
+ * (removing CLOUDFLARE_R2 from the allowlist) still refuses with "not enabled" regardless of
+ * whether the mechanism is installed, since the allowlist check runs first.
  *
  * <p>The policy routes go through {@code PolicyCatalogHandler}, which {@link TestServices} does not
  * wire (it has no policy API): building that handler by hand here would need the authorizer and
@@ -88,6 +97,44 @@ class S3CredentialVendingMechanismRoutesTest {
             () ->
                 (FileIOFactory) (accessConfig, ioImplClassName, properties) -> new InMemoryFileIO())
         .build();
+  }
+
+  /** With the CLOUDFLARE_R2 mechanism actually installed, a catalog using it serves and vends. */
+  private static TestServices servicesWithR2Installed(Map<String, Object> config) {
+    return TestServices.builder()
+        .config(config)
+        .fileIOFactorySupplier(
+            () ->
+                (FileIOFactory) (accessConfig, ioImplClassName, properties) -> new InMemoryFileIO())
+        .r2ParentTokenResolver(name -> Optional.of(new R2ParentToken("k", "s")))
+        .build();
+  }
+
+  private static Catalog r2Catalog(String name) {
+    return PolarisCatalog.builder()
+        .setType(Catalog.TypeEnum.INTERNAL)
+        .setName(name)
+        .setProperties(new CatalogProperties("s3://bucket/base/" + name))
+        .setStorageConfigInfo(
+            AwsStorageConfigInfo.builder(StorageConfigInfo.StorageTypeEnum.S3)
+                .setCredentialVendingMechanism("CLOUDFLARE_R2")
+                .setEndpoint(R2_ENDPOINT)
+                .setPathStyleAccess(true)
+                .setRegion("auto")
+                .setAllowedLocations(List.of("s3://bucket/base/" + name + "/"))
+                .build())
+        .build();
+  }
+
+  private static void createR2Catalog(TestServices svc, String name) {
+    try (Response r =
+        svc.catalogsApi()
+            .createCatalog(
+                new CreateCatalogRequest(r2Catalog(name)),
+                svc.realmContext(),
+                svc.securityContext())) {
+      assertThat(r.getStatus()).isEqualTo(Response.Status.CREATED.getStatusCode());
+    }
   }
 
   private static Catalog stsCatalog(String name) {
@@ -260,6 +307,65 @@ class S3CredentialVendingMechanismRoutesTest {
       assertThat(r.getStatus()).isEqualTo(Response.Status.OK.getStatusCode());
     }
     assertLoadTableSucceeds(svc, "stscat", "ns", "t");
+  }
+
+  /**
+   * Once the CLOUDFLARE_R2 mechanism is actually installed (a real parent-token resolver is
+   * configured), a catalog using it can be created directly and every Iceberg route serves.
+   */
+  @ParameterizedTest
+  @ValueSource(booleans = {false, true})
+  void everyIcebergRouteOnACloudflareR2CatalogServesWhenTheMechanismIsInstalled(
+      boolean skipSubscoping) {
+    TestServices svc = servicesWithR2Installed(config(skipSubscoping));
+    createR2Catalog(svc, "r2serve");
+    createNamespace(svc, "r2serve", "ns");
+    createTable(svc, "r2serve", "ns", "t");
+
+    assertLoadTableSucceeds(svc, "r2serve", "ns", "t");
+    try (Response r =
+        svc.restApi()
+            .listNamespaces(
+                "r2serve", null, null, null, svc.realmContext(), svc.securityContext())) {
+      assertThat(r.getStatus()).isEqualTo(Response.Status.OK.getStatusCode());
+    }
+    try (Response r =
+        svc.restApi()
+            .loadNamespaceMetadata("r2serve", "ns", svc.realmContext(), svc.securityContext())) {
+      assertThat(r.getStatus()).isEqualTo(Response.Status.OK.getStatusCode());
+    }
+    try (Response r =
+        svc.catalogsApi().getCatalog("r2serve", svc.realmContext(), svc.securityContext())) {
+      assertThat(r.getStatus()).isEqualTo(Response.Status.OK.getStatusCode());
+    }
+  }
+
+  @Test
+  void aDelegatedLoadVendsCloudflareR2Credentials() {
+    TestServices svc = servicesWithR2Installed(config(false));
+    createR2Catalog(svc, "r2vend");
+    createNamespace(svc, "r2vend", "ns");
+    createTable(svc, "r2vend", "ns", "t");
+
+    try (Response r =
+        svc.restApi()
+            .loadTable(
+                "r2vend",
+                "ns",
+                "t",
+                "vended-credentials",
+                null,
+                "ALL",
+                null,
+                svc.realmContext(),
+                svc.securityContext())) {
+      assertThat(r.getStatus()).isEqualTo(Response.Status.OK.getStatusCode());
+      LoadTableResponse loaded = r.readEntity(LoadTableResponse.class);
+      assertThat(loaded.config())
+          .containsEntry("s3.access-key-id", "k")
+          .containsEntry("s3.endpoint", R2_ENDPOINT)
+          .containsKey("s3.session-token");
+    }
   }
 
   @ParameterizedTest

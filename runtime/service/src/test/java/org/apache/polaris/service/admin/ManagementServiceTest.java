@@ -56,6 +56,7 @@ import org.apache.polaris.core.persistence.dao.entity.BaseResult;
 import org.apache.polaris.core.persistence.dao.entity.CreateCatalogResult;
 import org.apache.polaris.core.persistence.dao.entity.EntityResult;
 import org.apache.polaris.core.secrets.UnsafeInMemorySecretsManager;
+import org.apache.polaris.core.storage.aws.r2.R2ParentTokenResolver;
 import org.apache.polaris.service.TestServices;
 import org.apache.polaris.service.config.ReservedProperties;
 import org.apache.polaris.service.identity.provider.DefaultServiceIdentityProvider;
@@ -388,7 +389,8 @@ public class ManagementServiceTest {
         new DefaultServiceIdentityProvider(),
         principal,
         new PolarisAuthorizerImpl(services.realmConfig()),
-        ReservedProperties.NONE);
+        ReservedProperties.NONE,
+        R2ParentTokenResolver.none());
   }
 
   private PrincipalEntity createPrincipal(

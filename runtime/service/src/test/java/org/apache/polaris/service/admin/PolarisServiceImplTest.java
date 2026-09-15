@@ -21,12 +21,14 @@ package org.apache.polaris.service.admin;
 import static org.assertj.core.api.Assertions.assertThatCode;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.Mockito.doReturn;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 import java.lang.reflect.Method;
 import java.util.List;
+import java.util.Optional;
 import org.apache.iceberg.exceptions.ForbiddenException;
 import org.apache.polaris.core.admin.model.AuthenticationParameters;
 import org.apache.polaris.core.admin.model.AwsStorageConfigInfo;
@@ -49,6 +51,8 @@ import org.apache.polaris.core.persistence.PolarisMetaStoreManager;
 import org.apache.polaris.core.persistence.resolver.PolarisResolutionManifest;
 import org.apache.polaris.core.persistence.resolver.ResolutionManifestFactory;
 import org.apache.polaris.core.secrets.UserSecretsManager;
+import org.apache.polaris.core.storage.aws.r2.R2ParentToken;
+import org.apache.polaris.core.storage.aws.r2.R2ParentTokenResolver;
 import org.apache.polaris.service.config.ReservedProperties;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -96,7 +100,8 @@ public class PolarisServiceImplTest {
             serviceIdentityProvider,
             principal,
             polarisAuthorizer,
-            reservedProperties);
+            reservedProperties,
+            R2ParentTokenResolver.none());
     polarisService =
         new PolarisServiceImpl(
             realmConfig, reservedProperties, adminService, serviceIdentityProvider);
@@ -139,6 +144,65 @@ public class PolarisServiceImplTest {
             () -> polarisService.createCatalog(new CreateCatalogRequest(catalog), null, null))
         .isInstanceOf(ForbiddenException.class)
         .hasMessage("denied");
+    verify(realmConfig, never())
+        .getConfig(FeatureConfiguration.SUPPORTED_S3_CREDENTIAL_VENDING_MECHANISMS);
+    verify(metaStoreManager, never()).createCatalog(any(), any(), any());
+  }
+
+  /**
+   * The allowlist and the parent-token presence check run only after authorization. This drives the
+   * real resource method, so a check re-added in front of {@code adminService.createCatalog} would
+   * fail it: a denied caller gets the 403 and neither the realm's allowlist nor the resolver is
+   * consulted.
+   */
+  @Test
+  void deniedCreateCatalogThroughTheResourceNeverConsultsTheParentTokenResolver() {
+    R2ParentTokenResolver resolver = Mockito.mock(R2ParentTokenResolver.class);
+    doReturn(Optional.of(new R2ParentToken("k", "s"))).when(resolver).resolve(any());
+    PolarisResolutionManifest manifest = Mockito.mock(PolarisResolutionManifest.class);
+    when(resolutionManifestFactory.createResolutionManifest(any(), any())).thenReturn(manifest);
+    when(polarisAuthorizer.authorize(any(), any()))
+        .thenReturn(AuthorizationDecision.deny("denied"));
+    when(realmConfig.getConfig(FeatureConfiguration.SUPPORTED_CATALOG_STORAGE_TYPES))
+        .thenReturn(List.of("S3"));
+    when(realmConfig.getConfig(FeatureConfiguration.ALLOW_SETTING_S3_ENDPOINTS)).thenReturn(true);
+    when(realmConfig.getConfig(
+            FeatureConfiguration.ALLOW_SETTING_SUB_CATALOG_RBAC_FOR_FEDERATED_CATALOGS))
+        .thenReturn(true);
+    PolarisAdminService admin =
+        new PolarisAdminService(
+            callContext,
+            resolutionManifestFactory,
+            metaStoreManager,
+            userSecretsManager,
+            serviceIdentityProvider,
+            Mockito.mock(PolarisPrincipal.class),
+            polarisAuthorizer,
+            reservedProperties,
+            resolver);
+    PolarisServiceImpl resource =
+        new PolarisServiceImpl(realmConfig, reservedProperties, admin, serviceIdentityProvider);
+
+    AwsStorageConfigInfo r2 =
+        AwsStorageConfigInfo.builder(StorageConfigInfo.StorageTypeEnum.S3)
+            .setCredentialVendingMechanism("CLOUDFLARE_R2")
+            .setEndpoint("https://0123456789abcdef0123456789abcdef.r2.cloudflarestorage.com")
+            .setPathStyleAccess(true)
+            .setRegion("auto")
+            .setAllowedLocations(List.of("s3://bucket/base/"))
+            .build();
+    Catalog catalog =
+        PolarisCatalog.builder()
+            .setType(Catalog.TypeEnum.INTERNAL)
+            .setName("r2")
+            .setProperties(new CatalogProperties("s3://bucket/base/"))
+            .setStorageConfigInfo(r2)
+            .build();
+
+    assertThatThrownBy(() -> resource.createCatalog(new CreateCatalogRequest(catalog), null, null))
+        .isInstanceOf(ForbiddenException.class)
+        .hasMessage("denied");
+    verify(resolver, never()).resolve(any());
     verify(realmConfig, never())
         .getConfig(FeatureConfiguration.SUPPORTED_S3_CREDENTIAL_VENDING_MECHANISMS);
     verify(metaStoreManager, never()).createCatalog(any(), any(), any());

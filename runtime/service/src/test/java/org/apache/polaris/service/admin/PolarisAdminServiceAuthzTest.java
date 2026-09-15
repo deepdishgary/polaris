@@ -34,6 +34,7 @@ import org.apache.polaris.core.entity.CatalogRoleEntity;
 import org.apache.polaris.core.entity.PolarisPrivilege;
 import org.apache.polaris.core.entity.PrincipalEntity;
 import org.apache.polaris.core.entity.PrincipalRoleEntity;
+import org.apache.polaris.core.storage.aws.r2.R2ParentTokenResolver;
 import org.apache.polaris.service.Profiles;
 import org.junit.jupiter.api.DynamicNode;
 import org.junit.jupiter.api.TestFactory;
@@ -59,7 +60,8 @@ public class PolarisAdminServiceAuthzTest extends PolarisAuthzTestBase {
         serviceIdentityProvider,
         authenticatedPrincipal,
         polarisAuthorizer,
-        reservedProperties);
+        reservedProperties,
+        R2ParentTokenResolver.none());
   }
 
   private PolarisAdminService newTestAdminService(Set<String> activatedPrincipalRoles) {

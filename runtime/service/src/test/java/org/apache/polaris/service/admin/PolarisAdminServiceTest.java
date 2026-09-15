@@ -24,6 +24,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.doAnswer;
+import static org.mockito.Mockito.doReturn;
 import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
@@ -85,6 +86,8 @@ import org.apache.polaris.core.persistence.resolver.ResolvedPathKey;
 import org.apache.polaris.core.persistence.resolver.ResolverStatus;
 import org.apache.polaris.core.secrets.SecretReference;
 import org.apache.polaris.core.secrets.UserSecretsManager;
+import org.apache.polaris.core.storage.aws.r2.R2ParentToken;
+import org.apache.polaris.core.storage.aws.r2.R2ParentTokenResolver;
 import org.apache.polaris.service.config.ReservedProperties;
 import org.assertj.core.api.Assertions;
 import org.junit.jupiter.api.BeforeEach;
@@ -102,6 +105,7 @@ public class PolarisAdminServiceTest {
   @Mock private ServiceIdentityProvider identityProvider;
   @Mock private PolarisAuthorizer authorizer;
   @Mock private ReservedProperties reservedProperties;
+  @Mock private R2ParentTokenResolver r2ParentTokenResolver;
   @Mock private PolarisPrincipal authenticatedPrincipal;
   @Mock private PolarisResolutionManifest resolutionManifest;
   @Mock private PolarisResolvedPathWrapper resolvedPathWrapper;
@@ -148,7 +152,8 @@ public class PolarisAdminServiceTest {
             identityProvider,
             authenticatedPrincipal,
             authorizer,
-            reservedProperties);
+            reservedProperties,
+            r2ParentTokenResolver);
   }
 
   protected static void assertSuccess(BaseResult result) {
@@ -266,6 +271,39 @@ public class PolarisAdminServiceTest {
     assertThatThrownBy(() -> adminService.createCatalog(cloudflareR2CatalogRequest()))
         .isInstanceOf(ValidationException.class)
         .hasMessage("S3 credential vending mechanism CLOUDFLARE_R2 is not enabled in this realm");
+    verify(authorizer).authorize(any(), any());
+    verify(metaStoreManager, never()).createCatalog(any(), any(), any());
+  }
+
+  /**
+   * An unauthorized caller gets the same 403 whether or not the server holds a parent token, and
+   * neither the realm allowlist nor the resolver is consulted before authorization.
+   */
+  @Test
+  void deniedCreateCatalogRevealsNothingAboutTheParentToken() {
+    when(authorizer.authorize(any(), any())).thenReturn(AuthorizationDecision.deny("denied"));
+    List<Optional<R2ParentToken>> tokens =
+        List.of(Optional.of(new R2ParentToken("k", "s")), Optional.empty());
+    for (Optional<R2ParentToken> token : tokens) {
+      doReturn(token).when(r2ParentTokenResolver).resolve(any());
+      assertThatThrownBy(() -> adminService.createCatalog(cloudflareR2CatalogRequest()))
+          .isInstanceOf(ForbiddenException.class)
+          .hasMessage("denied");
+    }
+    verify(r2ParentTokenResolver, never()).resolve(any());
+    verify(realmConfig, never())
+        .getConfig(FeatureConfiguration.SUPPORTED_S3_CREDENTIAL_VENDING_MECHANISMS);
+  }
+
+  /** The checks still run: an authorized caller without a parent token gets the 400. */
+  @Test
+  void authorizedCreateCatalogWithoutAParentTokenIsRefusedAfterAuthorization() {
+    when(realmConfig.getConfig(FeatureConfiguration.SUPPORTED_S3_CREDENTIAL_VENDING_MECHANISMS))
+        .thenReturn(List.of("STS", "CLOUDFLARE_R2"));
+    doReturn(Optional.empty()).when(r2ParentTokenResolver).resolve(any());
+    assertThatThrownBy(() -> adminService.createCatalog(cloudflareR2CatalogRequest()))
+        .isInstanceOf(IllegalArgumentException.class)
+        .hasMessage(R2ParentTokenResolver.missingTokenMessage(null));
     verify(authorizer).authorize(any(), any());
     verify(metaStoreManager, never()).createCatalog(any(), any(), any());
   }

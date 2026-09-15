@@ -69,6 +69,7 @@ import org.apache.polaris.core.persistence.resolver.ResolverFactory;
 import org.apache.polaris.core.secrets.UserSecretsManager;
 import org.apache.polaris.core.secrets.UserSecretsManagerFactory;
 import org.apache.polaris.core.storage.aws.S3CredentialVendingMechanism;
+import org.apache.polaris.core.storage.aws.r2.R2ParentTokenResolver;
 import org.apache.polaris.core.storage.cache.StorageCredentialCache;
 import org.apache.polaris.core.storage.cache.StorageCredentialCacheConfig;
 import org.apache.polaris.service.admin.PolarisAdminService;
@@ -116,6 +117,7 @@ import org.apache.polaris.service.idempotency.IdempotencyRequestContext;
 import org.apache.polaris.service.identity.provider.DefaultServiceIdentityProvider;
 import org.apache.polaris.service.persistence.InMemoryPolarisMetaStoreManagerFactory;
 import org.apache.polaris.service.secrets.UnsafeInMemorySecretsManagerFactory;
+import org.apache.polaris.service.storage.CloudflareR2CredentialVendingMechanism;
 import org.apache.polaris.service.storage.PolarisStorageIntegrationProviderImpl;
 import org.apache.polaris.service.storage.S3CredentialVendingMechanisms;
 import org.apache.polaris.service.storage.StsCredentialVendingMechanism;
@@ -185,6 +187,7 @@ public record TestServices(
     private Map<String, Object> config = Map.of();
     private StsClient stsClient;
     private Map<String, S3CredentialVendingMechanism> vendingMechanisms;
+    private R2ParentTokenResolver r2ParentTokenResolver;
     private boolean useEventDelegator = false;
     private Supplier<FileIOFactory> fileIOFactorySupplier = MeasuredFileIOFactory::new;
     private UnaryOperator<PolarisMetaStoreManager> metaStoreManagerDecorator =
@@ -243,6 +246,15 @@ public record TestServices(
       return this;
     }
 
+    /**
+     * Installs the CLOUDFLARE_R2 mechanism alongside STS in the default mechanism map. Only takes
+     * effect when {@link #vendingMechanisms} is not also set.
+     */
+    public Builder r2ParentTokenResolver(R2ParentTokenResolver r2ParentTokenResolver) {
+      this.r2ParentTokenResolver = r2ParentTokenResolver;
+      return this;
+    }
+
     public Builder withEventDelegator(boolean useEventDelegator) {
       this.useEventDelegator = useEventDelegator;
       return this;
@@ -273,13 +285,23 @@ public record TestServices(
 
       RealmConfig realmConfig = new RealmConfigImpl(configurationSource, realmContext);
 
-      Map<String, S3CredentialVendingMechanism> vendingMechanismsMap =
-          this.vendingMechanisms != null
-              ? this.vendingMechanisms
-              : Map.of(
-                  "STS",
-                  new StsCredentialVendingMechanism(
-                      (destination) -> stsClient, Optional.empty(), storageCredentialCache));
+      Map<String, S3CredentialVendingMechanism> vendingMechanismsMap;
+      if (this.vendingMechanisms != null) {
+        vendingMechanismsMap = this.vendingMechanisms;
+      } else {
+        StsCredentialVendingMechanism sts =
+            new StsCredentialVendingMechanism(
+                (destination) -> stsClient, Optional.empty(), storageCredentialCache);
+        vendingMechanismsMap =
+            r2ParentTokenResolver == null
+                ? Map.of("STS", sts)
+                : Map.of(
+                    "STS",
+                    sts,
+                    S3CredentialVendingMechanism.CLOUDFLARE_R2,
+                    new CloudflareR2CredentialVendingMechanism(
+                        r2ParentTokenResolver, clock, storageCredentialCache));
+      }
       S3CredentialVendingMechanisms vendingMechanisms =
           new S3CredentialVendingMechanisms(vendingMechanismsMap);
 
@@ -581,7 +603,10 @@ public record TestServices(
                     serviceIdentityProvider,
                     principal,
                     authorizer,
-                    reservedProperties);
+                    reservedProperties,
+                    r2ParentTokenResolver == null
+                        ? R2ParentTokenResolver.none()
+                        : r2ParentTokenResolver);
             return new PolarisCatalogsApi(
                 new PolarisServiceImpl(
                     realmConfig, reservedProperties, adminService, serviceIdentityProvider));

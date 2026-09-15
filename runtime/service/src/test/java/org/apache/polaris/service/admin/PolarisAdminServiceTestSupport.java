@@ -25,6 +25,7 @@ import org.apache.polaris.core.identity.provider.ServiceIdentityProvider;
 import org.apache.polaris.core.persistence.PolarisMetaStoreManager;
 import org.apache.polaris.core.persistence.resolver.ResolutionManifestFactory;
 import org.apache.polaris.core.secrets.UserSecretsManager;
+import org.apache.polaris.core.storage.aws.r2.R2ParentTokenResolver;
 import org.apache.polaris.service.config.ReservedProperties;
 
 public final class PolarisAdminServiceTestSupport {
@@ -47,6 +48,7 @@ public final class PolarisAdminServiceTestSupport {
         serviceIdentityProvider,
         principal,
         authorizer,
-        reservedProperties);
+        reservedProperties,
+        R2ParentTokenResolver.none());
   }
 }
