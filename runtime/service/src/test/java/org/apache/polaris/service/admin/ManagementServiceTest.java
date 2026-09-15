@@ -25,6 +25,7 @@ import jakarta.ws.rs.core.Response;
 import java.time.Instant;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.Set;
 import java.util.function.Supplier;
 import org.apache.iceberg.exceptions.BadRequestException;
@@ -56,6 +57,7 @@ import org.apache.polaris.core.persistence.dao.entity.BaseResult;
 import org.apache.polaris.core.persistence.dao.entity.CreateCatalogResult;
 import org.apache.polaris.core.persistence.dao.entity.EntityResult;
 import org.apache.polaris.core.secrets.UnsafeInMemorySecretsManager;
+import org.apache.polaris.core.storage.aws.r2.R2ParentToken;
 import org.apache.polaris.core.storage.aws.r2.R2ParentTokenResolver;
 import org.apache.polaris.service.TestServices;
 import org.apache.polaris.service.config.ReservedProperties;
@@ -791,8 +793,17 @@ public class ManagementServiceTest {
   private static final String R2_ACCOUNT = "0123456789abcdef0123456789abcdef";
   private static final String R2_ENDPOINT = "https://" + R2_ACCOUNT + ".r2.cloudflarestorage.com";
 
+  /** Every storage name resolves, so the model and freeze cases are not about the token. */
+  private static final R2ParentTokenResolver ANY_TOKEN =
+      name -> Optional.of(new R2ParentToken("k", "s"));
+
   private static TestServices mechanismServices(
       List<String> mechanisms, boolean unrestrictedChanges) {
+    return mechanismServices(mechanisms, unrestrictedChanges, ANY_TOKEN);
+  }
+
+  private static TestServices mechanismServices(
+      List<String> mechanisms, boolean unrestrictedChanges, R2ParentTokenResolver resolver) {
     return TestServices.builder()
         .config(
             Map.of(
@@ -802,6 +813,7 @@ public class ManagementServiceTest {
                 mechanisms,
                 "ALLOW_UNRESTRICTED_STORAGE_CONFIG_ROLE_CHANGES",
                 unrestrictedChanges))
+        .r2ParentTokenResolver(resolver)
         .build();
   }
 
@@ -855,6 +867,103 @@ public class ManagementServiceTest {
     assertThatThrownBy(() -> create(r2Only, catalogNamed("sts-off", sts)))
         .isInstanceOf(ValidationException.class)
         .hasMessage("S3 credential vending mechanism STS is not enabled in this realm");
+  }
+
+  /** A resolver that only knows the named entry "prod", as a server with one named token would. */
+  private static TestServices servicesKnowingOnlyProd() {
+    return mechanismServices(
+        List.of("STS", "CLOUDFLARE_R2"),
+        false,
+        name -> "prod".equals(name) ? Optional.of(new R2ParentToken("k", "s")) : Optional.empty());
+  }
+
+  @Test
+  public void testCloudflareR2CatalogFailsWithoutADefaultParentToken() {
+    TestServices noToken =
+        mechanismServices(List.of("STS", "CLOUDFLARE_R2"), false, R2ParentTokenResolver.none());
+    assertThatThrownBy(() -> create(noToken, catalogNamed("r2-no-token", r2Config().build())))
+        .isInstanceOf(IllegalArgumentException.class)
+        .hasMessage(
+            "No default Cloudflare R2 parent token is configured on the server"
+                + " (polaris.storage.cloudflare-r2.access-key / secret-key)");
+  }
+
+  @Test
+  public void testCloudflareR2CatalogFailsForAnUnknownStorageName() {
+    TestServices onlyProd = servicesKnowingOnlyProd();
+    assertThatThrownBy(
+            () ->
+                create(
+                    onlyProd,
+                    catalogNamed("r2-unknown-name", r2Config().setStorageName("missing").build())))
+        .isInstanceOf(IllegalArgumentException.class)
+        .hasMessage(
+            "No Cloudflare R2 parent token is configured for storage name 'missing'"
+                + " (polaris.storage.cloudflare-r2.missing.access-key / secret-key)");
+  }
+
+  @Test
+  public void testCloudflareR2CatalogWithANamedParentTokenIsCreated() {
+    TestServices onlyProd = servicesKnowingOnlyProd();
+    try (Response response =
+        create(onlyProd, catalogNamed("r2-prod", r2Config().setStorageName("prod").build()))) {
+      assertThat(response.getStatus()).isEqualTo(Response.Status.CREATED.getStatusCode());
+    }
+    AwsStorageConfigInfo fetched =
+        (AwsStorageConfigInfo) fetch(onlyProd, "r2-prod").getStorageConfigInfo();
+    assertThat(fetched.getStorageName()).isEqualTo("prod");
+    assertThat(fetched.getCredentialVendingMechanism()).isEqualTo("CLOUDFLARE_R2");
+  }
+
+  @Test
+  public void testCloudflareR2UpdateFailsWhenTheStorageNameBecomesUnknown() {
+    TestServices onlyProd = servicesKnowingOnlyProd();
+    try (Response response =
+        create(onlyProd, catalogNamed("r2-rename", r2Config().setStorageName("prod").build()))) {
+      assertThat(response.getStatus()).isEqualTo(Response.Status.CREATED.getStatusCode());
+    }
+    Catalog fetched = fetch(onlyProd, "r2-rename");
+    UpdateCatalogRequest toMissing =
+        new UpdateCatalogRequest(
+            fetched.getEntityVersion(),
+            Map.of("default-base-location", "s3://r2-bucket/base/r2-rename"),
+            r2Config().setStorageName("missing").build());
+    assertThatThrownBy(
+            () ->
+                onlyProd
+                    .catalogsApi()
+                    .updateCatalog(
+                        "r2-rename",
+                        toMissing,
+                        onlyProd.realmContext(),
+                        onlyProd.securityContext()))
+        .isInstanceOf(IllegalArgumentException.class)
+        .hasMessageContaining("for storage name 'missing'");
+  }
+
+  /** The realm allowlist is checked before the token, so a disabled mechanism says so first. */
+  @Test
+  public void testDisabledMechanismIsReportedBeforeAMissingToken() {
+    TestServices stsOnlyNoToken =
+        mechanismServices(List.of("STS"), false, R2ParentTokenResolver.none());
+    assertThatThrownBy(() -> create(stsOnlyNoToken, catalogNamed("r2-off", r2Config().build())))
+        .isInstanceOf(ValidationException.class)
+        .hasMessage("S3 credential vending mechanism CLOUDFLARE_R2 is not enabled in this realm");
+  }
+
+  /** An STS catalog never consults the parent-token resolver. */
+  @Test
+  public void testStsCatalogIsCreatedWithoutAnyParentToken() {
+    TestServices noToken =
+        mechanismServices(List.of("STS", "CLOUDFLARE_R2"), false, R2ParentTokenResolver.none());
+    AwsStorageConfigInfo sts =
+        AwsStorageConfigInfo.builder(StorageConfigInfo.StorageTypeEnum.S3)
+            .setRoleArn("arn:aws:iam::123456789012:role/my-role")
+            .setAllowedLocations(List.of("s3://r2-bucket/base/"))
+            .build();
+    try (Response response = create(noToken, catalogNamed("sts-no-token", sts))) {
+      assertThat(response.getStatus()).isEqualTo(Response.Status.CREATED.getStatusCode());
+    }
   }
 
   @Test

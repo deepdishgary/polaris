@@ -52,19 +52,25 @@ import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.ValueSource;
 
 /**
- * By default only STS is installed in {@link TestServices}, so every Iceberg route that opens a
- * CLOUDFLARE_R2 catalog is refused at initialization, namespace reads included, with or without
- * SKIP_CREDENTIAL_SUBSCOPING_INDIRECTION; an STS catalog in the same realm is untouched. The R2
- * catalog is produced by updating an STS catalog under
- * ALLOW_UNRESTRICTED_STORAGE_CONFIG_ROLE_CHANGES, because nothing can be created inside an R2
- * catalog while the mechanism has no installed bean. Every catalog gets its own allowed location:
- * upstream rejects overlapping catalog locations at create and update.
+ * {@link #servicesWithR2Installed} installs the real CLOUDFLARE_R2 bean with a working parent-token
+ * resolver alongside STS, the shape a production server actually takes once this mechanism ships. A
+ * CLOUDFLARE_R2 catalog can be created or updated only when a parent token resolves for its {@code
+ * storageName} ({@link PolarisAdminService}'s presence check runs at create and update regardless
+ * of whether the bean happens to be installed), so every test that creates or switches a catalog to
+ * CLOUDFLARE_R2 uses {@link #servicesWithR2Installed}.
  *
- * <p>Once the mechanism is actually installed ({@link #servicesWithR2Installed}, a real
- * parent-token resolver configured), a CLOUDFLARE_R2 catalog can be created directly and every
- * route serves; a delegated load actually vends R2 temporary credentials. The realm kill switch
- * (removing CLOUDFLARE_R2 from the allowlist) still refuses with "not enabled" regardless of
- * whether the mechanism is installed, since the allowlist check runs first.
+ * <p>With the mechanism installed, a CLOUDFLARE_R2 catalog can be created directly and every
+ * Iceberg route serves, with or without SKIP_CREDENTIAL_SUBSCOPING_INDIRECTION; a delegated load
+ * actually vends R2 temporary credentials. The realm kill switch (removing CLOUDFLARE_R2 from the
+ * allowlist) still refuses with "not enabled" regardless of whether the mechanism is installed,
+ * since the allowlist check runs first; an STS catalog in the same realm is untouched throughout.
+ * Every catalog gets its own allowed location: upstream rejects overlapping catalog locations at
+ * create and update.
+ *
+ * <p>The generic case of an allowlisted mechanism with no installed bean at all (no R2-specific
+ * presence check to satisfy) is covered by {@link
+ * org.apache.polaris.service.storage.S3CredentialVendingMechanismCdiTest}, through a real
+ * container.
  *
  * <p>The policy routes go through {@code PolicyCatalogHandler}, which {@link TestServices} does not
  * wire (it has no policy API): building that handler by hand here would need the authorizer and
@@ -76,8 +82,6 @@ class S3CredentialVendingMechanismRoutesTest {
 
   private static final String R2_ENDPOINT =
       "https://0123456789abcdef0123456789abcdef.r2.cloudflarestorage.com";
-  private static final String NOT_AVAILABLE =
-      "S3 credential vending mechanism CLOUDFLARE_R2 is not available in this server";
   private static final String NOT_ENABLED =
       "S3 credential vending mechanism CLOUDFLARE_R2 is not enabled in this realm";
 
@@ -88,15 +92,6 @@ class S3CredentialVendingMechanismRoutesTest {
     config.put("ALLOW_UNRESTRICTED_STORAGE_CONFIG_ROLE_CHANGES", true);
     config.put("SKIP_CREDENTIAL_SUBSCOPING_INDIRECTION", skipSubscoping);
     return config;
-  }
-
-  private static TestServices services(Map<String, Object> config) {
-    return TestServices.builder()
-        .config(config)
-        .fileIOFactorySupplier(
-            () ->
-                (FileIOFactory) (accessConfig, ioImplClassName, properties) -> new InMemoryFileIO())
-        .build();
   }
 
   /** With the CLOUDFLARE_R2 mechanism actually installed, a catalog using it serves and vends. */
@@ -255,63 +250,15 @@ class S3CredentialVendingMechanismRoutesTest {
     }
   }
 
-  @ParameterizedTest
-  @ValueSource(booleans = {false, true})
-  void everyIcebergRouteOnACloudflareR2CatalogIsRefusedAtInitialization(boolean skipSubscoping) {
-    TestServices svc = services(config(skipSubscoping));
-    createCatalog(svc, "r2cat");
-    createNamespace(svc, "r2cat", "ns");
-    createTable(svc, "r2cat", "ns", "t");
-    createCatalog(svc, "stscat");
-    createNamespace(svc, "stscat", "ns");
-    createTable(svc, "stscat", "ns", "t");
-    switchToCloudflareR2(svc, "r2cat");
-
-    assertThatThrownBy(
-            () ->
-                svc.restApi()
-                    .listNamespaces(
-                        "r2cat", null, null, null, svc.realmContext(), svc.securityContext()))
-        .isInstanceOf(ValidationException.class)
-        .hasMessage(NOT_AVAILABLE);
-    assertThatThrownBy(
-            () ->
-                svc.restApi()
-                    .loadNamespaceMetadata(
-                        "r2cat", "ns", svc.realmContext(), svc.securityContext()))
-        .isInstanceOf(ValidationException.class)
-        .hasMessage(NOT_AVAILABLE);
-    assertThatThrownBy(
-            () ->
-                svc.restApi()
-                    .createNamespace(
-                        "r2cat",
-                        CreateNamespaceRequest.builder().withNamespace(Namespace.of("ns2")).build(),
-                        null,
-                        svc.realmContext(),
-                        svc.securityContext()))
-        .isInstanceOf(ValidationException.class)
-        .hasMessage(NOT_AVAILABLE);
-    assertLoadTableRefused(svc, "r2cat", "ns", "t", "vended-credentials", NOT_AVAILABLE);
-    assertLoadTableRefused(svc, "r2cat", "ns", "t", null, NOT_AVAILABLE);
-
-    // Management reads are unaffected, and the STS catalog in the same realm still serves.
-    try (Response r =
-        svc.catalogsApi().getCatalog("r2cat", svc.realmContext(), svc.securityContext())) {
-      assertThat(r.getStatus()).isEqualTo(Response.Status.OK.getStatusCode());
-    }
-    try (Response r =
-        svc.restApi()
-            .listNamespaces(
-                "stscat", null, null, null, svc.realmContext(), svc.securityContext())) {
-      assertThat(r.getStatus()).isEqualTo(Response.Status.OK.getStatusCode());
-    }
-    assertLoadTableSucceeds(svc, "stscat", "ns", "t");
-  }
-
   /**
    * Once the CLOUDFLARE_R2 mechanism is actually installed (a real parent-token resolver is
-   * configured), a catalog using it can be created directly and every Iceberg route serves.
+   * configured), a catalog using it can be created directly and every Iceberg route serves. This is
+   * the PR 1 "refused at initialization" scenario, flipped: once a real bean exists, a
+   * CLOUDFLARE_R2 catalog can no longer be created at all without a configured parent token (see
+   * {@link PolarisAdminService}'s presence check), so "installed but never given a token" is no
+   * longer a state the create API can reach; the uninstalled-mechanism gate contract itself is
+   * covered generically, for a mechanism with no R2-specific presence check, by {@link
+   * org.apache.polaris.service.storage.S3CredentialVendingMechanismCdiTest}.
    */
   @ParameterizedTest
   @ValueSource(booleans = {false, true})
@@ -372,7 +319,7 @@ class S3CredentialVendingMechanismRoutesTest {
   @ValueSource(booleans = {false, true})
   void theRealmKillSwitchRefusesTheR2CatalogWithNotEnabled(boolean skipSubscoping) {
     Map<String, Object> config = config(skipSubscoping);
-    TestServices svc = services(config);
+    TestServices svc = servicesWithR2Installed(config);
     createCatalog(svc, "r2kill");
     createNamespace(svc, "r2kill", "ns");
     createTable(svc, "r2kill", "ns", "t");
@@ -471,24 +418,17 @@ class S3CredentialVendingMechanismRoutesTest {
 
   /**
    * An EXTERNAL catalog never reaches LocalIcebergCatalog, so the handler's own check is its only
-   * gate. With the mechanism enabled the request stops at the gate with "not available" (the
-   * federated factory lookup, which TestServices leaves unsatisfied, is never reached); with the
-   * kill switch engaged it stops with "not enabled".
+   * gate. The realm kill switch (removing CLOUDFLARE_R2 from the allowlist) stops the request with
+   * "not enabled" before the federated factory lookup (which TestServices leaves unsatisfied) is
+   * ever reached, whether or not the mechanism happens to be installed: the allowlist check runs
+   * first.
    */
   @Test
   void theRealmKillSwitchGatesAnExternalCatalogBeforeItsFederatedFactory() {
     Map<String, Object> config = config(false);
     config.put("ENABLE_CATALOG_FEDERATION", true);
-    TestServices svc = services(config);
+    TestServices svc = servicesWithR2Installed(config);
     createExternalR2Catalog(svc, "r2ext");
-
-    assertThatThrownBy(
-            () ->
-                svc.restApi()
-                    .listNamespaces(
-                        "r2ext", null, null, null, svc.realmContext(), svc.securityContext()))
-        .isInstanceOf(ValidationException.class)
-        .hasMessage(NOT_AVAILABLE);
 
     config.put("SUPPORTED_S3_CREDENTIAL_VENDING_MECHANISMS", List.of("STS"));
     assertThatThrownBy(
@@ -501,23 +441,24 @@ class S3CredentialVendingMechanismRoutesTest {
   }
 
   /**
-   * Generic-table routes open the catalog through their own handler; the gate applies there too.
+   * Generic-table routes open the catalog through their own handler; the realm kill switch applies
+   * there too.
    */
   @Test
   void theRealmKillSwitchRefusesGenericTableRoutesToo() {
     Map<String, Object> config = config(false);
-    TestServices svc = services(config);
+    TestServices svc = servicesWithR2Installed(config);
     createCatalog(svc, "r2gen");
     createNamespace(svc, "r2gen", "ns");
     switchToCloudflareR2(svc, "r2gen");
 
-    assertThatThrownBy(
-            () ->
-                svc.genericTableApi()
-                    .listGenericTables(
-                        "r2gen", "ns", null, null, svc.realmContext(), svc.securityContext()))
-        .isInstanceOf(ValidationException.class)
-        .hasMessage(NOT_AVAILABLE);
+    // Before the kill switch, the mechanism is installed and allowlisted, so the route serves.
+    try (Response r =
+        svc.genericTableApi()
+            .listGenericTables(
+                "r2gen", "ns", null, null, svc.realmContext(), svc.securityContext())) {
+      assertThat(r.getStatus()).isEqualTo(Response.Status.OK.getStatusCode());
+    }
 
     config.put("SUPPORTED_S3_CREDENTIAL_VENDING_MECHANISMS", List.of("STS"));
     assertThatThrownBy(

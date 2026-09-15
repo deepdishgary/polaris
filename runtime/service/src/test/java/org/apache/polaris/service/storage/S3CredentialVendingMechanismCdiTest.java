@@ -153,8 +153,9 @@ class S3CredentialVendingMechanismCdiTest {
       PolarisApiEndpoints endpoints, ClientCredentials credentials) throws Exception {
     // The application started at all, with UNINSTALLED_MECHANISM allowlisted and not installed,
     // and default readiness settings, is itself part of what this proves; availableIds() shows
-    // both real, shipped beans installed, sorted.
-    assertThat(mechanisms.availableIds()).containsExactly("CLOUDFLARE_R2", "STS");
+    // both real, shipped beans installed. Set.copyOf's iteration order is unspecified, so this
+    // does not assert an order.
+    assertThat(mechanisms.availableIds()).containsExactlyInAnyOrder("CLOUDFLARE_R2", "STS");
 
     try (PolarisClient client = PolarisClient.polarisClient(endpoints)) {
       String adminToken = client.obtainToken(credentials);
