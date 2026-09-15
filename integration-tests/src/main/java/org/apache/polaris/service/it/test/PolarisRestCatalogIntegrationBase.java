@@ -410,6 +410,21 @@ public abstract class PolarisRestCatalogIntegrationBase extends CatalogTests<RES
     return restCatalog;
   }
 
+  /** The catalog API client authenticated as the current test principal. */
+  protected CatalogApi catalogApi() {
+    return catalogApi;
+  }
+
+  /** The management API client authenticated as the admin principal. */
+  protected ManagementApi managementApi() {
+    return managementApi;
+  }
+
+  /** Name of the catalog created for the current test method. */
+  protected String currentCatalogName() {
+    return currentCatalogName;
+  }
+
   /** Overridable methods to allow subclasses to execute additional logic on catalog creation. */
   protected void createPolarisCatalog(Catalog catalog) {
     managementApi.createCatalog(catalog);

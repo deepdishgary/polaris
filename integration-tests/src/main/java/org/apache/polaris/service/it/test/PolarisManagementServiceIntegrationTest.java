@@ -326,6 +326,42 @@ public class PolarisManagementServiceIntegrationTest {
   }
 
   @Test
+  public void testCreateCatalogWithCloudflareR2StorageConfig() {
+    String endpoint = "https://0123456789abcdef0123456789abcdef.r2.cloudflarestorage.com";
+    AwsStorageConfigInfo r2ConfigModel =
+        AwsStorageConfigInfo.builder()
+            .setStorageType(StorageConfigInfo.StorageTypeEnum.S3)
+            .setCredentialVendingMechanism("CLOUDFLARE_R2")
+            .setEndpoint(endpoint)
+            .setPathStyleAccess(true)
+            .setRegion("auto")
+            .build();
+    Catalog catalog =
+        PolarisCatalog.builder()
+            .setType(Catalog.TypeEnum.INTERNAL)
+            .setName(client.newEntityName("my-catalog"))
+            .setProperties(new CatalogProperties("s3://my-r2-bucket/path/to/data"))
+            .setStorageConfigInfo(r2ConfigModel)
+            .build();
+
+    managementApi.createCatalog(catalog);
+
+    try (Response response =
+        managementApi.request("v1/catalogs/{cat}", Map.of("cat", catalog.getName())).get()) {
+      assertThat(response).returns(Response.Status.OK.getStatusCode(), Response::getStatus);
+      Catalog catResponse = response.readEntity(Catalog.class);
+      assertThat(catResponse.getStorageConfigInfo())
+          .isInstanceOf(AwsStorageConfigInfo.class)
+          .hasFieldOrPropertyWithValue("credentialVendingMechanism", "CLOUDFLARE_R2")
+          .hasFieldOrPropertyWithValue("endpoint", endpoint)
+          .hasFieldOrPropertyWithValue("pathStyleAccess", true)
+          .hasFieldOrPropertyWithValue("region", "auto")
+          .hasFieldOrPropertyWithValue(
+              "allowedLocations", List.of("s3://my-r2-bucket/path/to/data"));
+    }
+  }
+
+  @Test
   public void testCreateCatalogWithNullBaseLocation() {
     AwsStorageConfigInfo awsConfigModel =
         AwsStorageConfigInfo.builder()
