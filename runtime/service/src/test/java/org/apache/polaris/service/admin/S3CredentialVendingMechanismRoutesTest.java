@@ -418,10 +418,10 @@ class S3CredentialVendingMechanismRoutesTest {
 
   /**
    * An EXTERNAL catalog never reaches LocalIcebergCatalog, so the handler's own check is its only
-   * gate. The realm kill switch (removing CLOUDFLARE_R2 from the allowlist) stops the request with
-   * "not enabled" before the federated factory lookup (which TestServices leaves unsatisfied) is
-   * ever reached, whether or not the mechanism happens to be installed: the allowlist check runs
-   * first.
+   * gate. With the mechanism installed and allowlisted the request gets as far as the federated
+   * factory lookup (which TestServices leaves unsatisfied); the realm kill switch (removing
+   * CLOUDFLARE_R2 from the allowlist) stops it earlier, with "not enabled", before that lookup is
+   * ever reached, since the allowlist check runs first.
    */
   @Test
   void theRealmKillSwitchGatesAnExternalCatalogBeforeItsFederatedFactory() {
@@ -429,6 +429,14 @@ class S3CredentialVendingMechanismRoutesTest {
     config.put("ENABLE_CATALOG_FEDERATION", true);
     TestServices svc = servicesWithR2Installed(config);
     createExternalR2Catalog(svc, "r2ext");
+
+    assertThatThrownBy(
+            () ->
+                svc.restApi()
+                    .listNamespaces(
+                        "r2ext", null, null, null, svc.realmContext(), svc.securityContext()))
+        .isInstanceOf(UnsupportedOperationException.class)
+        .hasMessage("External catalog factory for type 'ICEBERG_REST' is unavailable.");
 
     config.put("SUPPORTED_S3_CREDENTIAL_VENDING_MECHANISMS", List.of("STS"));
     assertThatThrownBy(

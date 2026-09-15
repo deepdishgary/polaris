@@ -93,7 +93,7 @@ import org.junit.jupiter.api.extension.ExtendWith;
  * ship. Quarkus does not allow {@code @TestProfile} on a {@code @Nested} class, so that scenario
  * cannot share this file: it needs its own application instance, since {@code
  * getEnabledAlternatives()} is a profile-wide, one-instance setting, and this class asserts {@code
- * availableIds()} is exactly {@code {STS}}.
+ * availableIds()} is exactly {@code {STS, CLOUDFLARE_R2}}.
  */
 @QuarkusTest
 @TestProfile(S3CredentialVendingMechanismCdiTest.Profile.class)
