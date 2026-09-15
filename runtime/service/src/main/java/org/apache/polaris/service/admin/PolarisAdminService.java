@@ -133,6 +133,7 @@ import org.apache.polaris.core.storage.PolarisStorageConfigurationInfo;
 import org.apache.polaris.core.storage.StorageLocation;
 import org.apache.polaris.core.storage.aws.AwsStorageConfigurationInfo;
 import org.apache.polaris.core.storage.aws.S3CredentialVendingMechanism;
+import org.apache.polaris.core.storage.aws.r2.R2ParentTokenResolver;
 import org.apache.polaris.core.storage.azure.AzureStorageConfigurationInfo;
 import org.apache.polaris.service.catalog.common.PolarisSecurableMapper;
 import org.apache.polaris.service.catalog.validation.IcebergPropertiesValidation;
@@ -166,6 +167,7 @@ public class PolarisAdminService {
   private final UserSecretsManager userSecretsManager;
   private final ServiceIdentityProvider serviceIdentityProvider;
   private final ReservedProperties reservedProperties;
+  private final R2ParentTokenResolver r2ParentTokenResolver;
 
   @Inject
   public PolarisAdminService(
@@ -176,7 +178,8 @@ public class PolarisAdminService {
       @NonNull ServiceIdentityProvider serviceIdentityProvider,
       @NonNull PolarisPrincipal principal,
       @NonNull PolarisAuthorizer authorizer,
-      @NonNull ReservedProperties reservedProperties) {
+      @NonNull ReservedProperties reservedProperties,
+      @NonNull R2ParentTokenResolver r2ParentTokenResolver) {
     this.callContext = callContext;
     this.realmConfig = callContext.getRealmConfig();
     this.resolutionManifestFactory = resolutionManifestFactory;
@@ -186,6 +189,7 @@ public class PolarisAdminService {
     this.userSecretsManager = userSecretsManager;
     this.serviceIdentityProvider = serviceIdentityProvider;
     this.reservedProperties = reservedProperties;
+    this.r2ParentTokenResolver = r2ParentTokenResolver;
   }
 
   private PolarisCallContext getCurrentPolarisContext() {
@@ -899,14 +903,24 @@ public class PolarisAdminService {
   }
 
   /**
-   * The realm allowlist for S3 credential vending mechanisms, checked after authorization so an
-   * unauthorized caller learns nothing about the realm's configuration. The storage-type gate and
-   * the S3 endpoint policy stay in {@code PolarisServiceImpl}, where they already were.
+   * The realm allowlist for S3 credential vending mechanisms, then the parent-token presence check
+   * for a {@code CLOUDFLARE_R2} config. Both run after authorization, so an unauthorized caller
+   * learns nothing about the realm's allowlist or the server's token configuration. The
+   * storage-type gate and the S3 endpoint policy stay in {@code PolarisServiceImpl}, where they
+   * already were.
    */
   private void validateS3CredentialVendingMechanism(@Nullable StorageConfigInfo storageConfigInfo) {
-    if (storageConfigInfo instanceof AwsStorageConfigInfo s3Config) {
-      IcebergPropertiesValidation.validateS3CredentialVendingMechanismAllowed(
-          realmConfig, PolarisStorageConfigurationInfo.credentialVendingMechanismOf(s3Config));
+    if (!(storageConfigInfo instanceof AwsStorageConfigInfo s3Config)) {
+      return;
+    }
+    String mechanism = PolarisStorageConfigurationInfo.credentialVendingMechanismOf(s3Config);
+    IcebergPropertiesValidation.validateS3CredentialVendingMechanismAllowed(realmConfig, mechanism);
+    // A CLOUDFLARE_R2 catalog needs a server-side parent token for its storageName; a catalog that
+    // could never vend is refused at create and update rather than at first use.
+    if (S3CredentialVendingMechanism.CLOUDFLARE_R2.equals(mechanism)
+        && r2ParentTokenResolver.resolve(s3Config.getStorageName()).isEmpty()) {
+      throw new IllegalArgumentException(
+          R2ParentTokenResolver.missingTokenMessage(s3Config.getStorageName()));
     }
   }
 

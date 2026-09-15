@@ -31,6 +31,8 @@ import java.util.Date;
 import java.util.Map;
 import java.util.Optional;
 import java.util.function.Supplier;
+import org.apache.polaris.core.storage.aws.r2.R2ParentToken;
+import org.apache.polaris.core.storage.aws.r2.R2ParentTokenResolver;
 import org.apache.polaris.docs.ConfigDocs;
 import org.apache.polaris.service.storage.aws.S3AccessConfig;
 import org.slf4j.LoggerFactory;
@@ -93,6 +95,71 @@ public interface StorageConfiguration extends S3AccessConfig {
     /** The AWS secret key to use for authentication when using named storages. */
     @WithName("secret-key")
     String secretKey();
+  }
+
+  /**
+   * Cloudflare R2 parent API tokens used to mint temporary credentials for S3 catalogs whose {@code
+   * credentialVendingMechanism} is {@code CLOUDFLARE_R2}. A catalog without a {@code storageName}
+   * uses the default {@code access-key}/{@code secret-key}; a catalog with a {@code storageName}
+   * uses {@code polaris.storage.cloudflare-r2.<storageName>.*}. There is no ambient credential
+   * chain for R2, so an unconfigured catalog cannot vend.
+   */
+  @WithName("cloudflare-r2")
+  CloudflareR2StorageConfig cloudflareR2();
+
+  interface CloudflareR2StorageConfig {
+    /**
+     * Access key id of the default Cloudflare R2 parent API token. The parent token must carry
+     * Object Read and Write permission on every bucket the catalogs use; a temporary credential
+     * cannot exceed it.
+     */
+    @WithName("access-key")
+    Optional<String> accessKey();
+
+    /** Secret access key of the default Cloudflare R2 parent API token. */
+    @WithName("secret-key")
+    Optional<String> secretKey();
+
+    @WithParentName
+    @ConfigDocs.ConfigPropertyName("storage")
+    Map<String, CloudflareR2NamedStorageConfig> storages();
+  }
+
+  interface CloudflareR2NamedStorageConfig {
+    /**
+     * Access key id of the Cloudflare R2 parent API token for catalogs with this {@code
+     * storageName}.
+     */
+    @WithName("access-key")
+    String accessKey();
+
+    /**
+     * Secret access key of the Cloudflare R2 parent API token for catalogs with this {@code
+     * storageName}.
+     */
+    @WithName("secret-key")
+    String secretKey();
+  }
+
+  /**
+   * Resolver over {@link #cloudflareR2()}: named entry when the catalog has a {@code storageName},
+   * default entry otherwise. An entry counts as present only when both keys are set.
+   */
+  default R2ParentTokenResolver cloudflareR2ParentTokenResolver() {
+    return storageName -> {
+      if (storageName != null) {
+        CloudflareR2NamedStorageConfig named = cloudflareR2().storages().get(storageName);
+        if (named == null || named.accessKey() == null || named.secretKey() == null) {
+          return Optional.empty();
+        }
+        return Optional.of(new R2ParentToken(named.accessKey(), named.secretKey()));
+      }
+      if (cloudflareR2().accessKey().isPresent() && cloudflareR2().secretKey().isPresent()) {
+        return Optional.of(
+            new R2ParentToken(cloudflareR2().accessKey().get(), cloudflareR2().secretKey().get()));
+      }
+      return Optional.empty();
+    };
   }
 
   /**
