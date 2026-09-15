@@ -235,12 +235,186 @@ this pattern end-to-end.
 [ozone-guide]: ../../../../guides/ozone/
 [ceph-guide]: ../../../../guides/ceph/
 
+## Credential vending mechanisms
+
+`credentialVendingMechanism` says how Polaris turns a table's locations and the requested actions into
+short-lived storage credentials for an S3 catalog:
+
+- `STS` (default): `AssumeRole` against `roleArn`, as described above.
+- `CLOUDFLARE_R2`: Polaris signs Cloudflare R2 temporary-credential tokens locally with a
+  server-held parent token. The catalog's `endpoint` must be an R2 endpoint,
+  `https://<accountId>[.<jurisdiction>].r2.cloudflarestorage.com` (jurisdictions `eu`, `fedramp`,
+  `us`), with `pathStyleAccess: true` and `region: "auto"`, and none of `roleArn`, `externalId`,
+  `userArn`, `stsEndpoint`, `stsUnavailable`, `endpointInternal` or the KMS fields. The account id
+  and jurisdiction are read from that validated endpoint; the endpoint is frozen after creation.
+  Polaris mints each credential itself by signing a JWT with a server-held parent token, scoped to
+  one bucket and the table's key prefixes and valid for `STORAGE_CREDENTIAL_DURATION_SECONDS`; no
+  call to Cloudflare is made. See [Server-side parent token for
+  CLOUDFLARE_R2](#server-side-parent-token-for-cloudflare_r2).
+
+Servers may provide further mechanisms as CDI beans identified by `@Identifier`; a realm accepts
+a mechanism only when its identifier appears in `SUPPORTED_S3_CREDENTIAL_VENDING_MECHANISMS`.
+
+A realm accepts mechanisms through
+`polaris.features."SUPPORTED_S3_CREDENTIAL_VENDING_MECHANISMS"` (default `["STS"]`). The list has
+no implicit member: to add R2 to a realm set `["STS", "CLOUDFLARE_R2"]`, never
+`["CLOUDFLARE_R2"]` alone, which would reject every plain S3 catalog. The setting is realm-level
+only and cannot be widened from catalog properties. It is enforced at catalog create and update,
+at catalog initialization on every request (so it has the same scope as
+`SUPPORTED_CATALOG_STORAGE_TYPES`), when storage access is resolved for a table or a cleanup
+task, and inside the storage integration provider.
+
+```json
+"storageConfigInfo": {
+  "storageType": "S3",
+  "credentialVendingMechanism": "CLOUDFLARE_R2",
+  "endpoint": "https://0123456789abcdef0123456789abcdef.r2.cloudflarestorage.com",
+  "pathStyleAccess": true,
+  "region": "auto",
+  "allowedLocations": ["s3://my-bucket/warehouse/"]
+}
+```
+
+### Server-side parent token for CLOUDFLARE_R2
+
+Create an R2 API token in the Cloudflare dashboard with **Object Read & Write** on every bucket
+the catalogs use; a temporary credential cannot exceed its parent's permissions. Give Polaris its
+access key id and secret:
+
+```properties
+polaris.storage.cloudflare-r2.access-key=<parent access key id>
+polaris.storage.cloudflare-r2.secret-key=<parent secret access key>
+```
+
+To use different parent tokens for different catalogs, name them and reference the name from the
+catalog's `storageName`:
+
+```properties
+polaris.storage.cloudflare-r2.research.access-key=...
+polaris.storage.cloudflare-r2.research.secret-key=...
+```
+
+Deliver the secret through a secret config source or environment variables
+(`POLARIS_STORAGE_CLOUDFLARE_R2_SECRET_KEY`), not a checked-in properties file. Avoid a storage
+name equal to `access-key` or `secret-key`; it would collide with the default entry. Unlike S3,
+R2 has no ambient credential chain, so a static server-side parent token is the only supported
+path. Polaris logs a warning at startup if only one half of the default key pair is set; a named
+entry with only one half fails startup, because both of its properties are required.
+
+A named entry has two environment-variable forms, and which one works depends on the name.
+`POLARIS_STORAGE_CLOUDFLARE_R2_<NAME>_ACCESS_KEY` and `POLARIS_STORAGE_CLOUDFLARE_R2_<NAME>_SECRET_KEY`
+bind a storage name that is one lowercase `[a-z0-9]+` segment:
+`POLARIS_STORAGE_CLOUDFLARE_R2_RESEARCH_ACCESS_KEY` binds `research`. A name containing `-`, `_`
+or `.` does not bind through this form. Set such a name with the property name itself as the
+variable name, which Kubernetes and podman both accept:
+
+```yaml
+env:
+  - name: polaris.storage.cloudflare-r2.team-c.access-key
+    value: <parent access key id>
+  - name: polaris.storage.cloudflare-r2.team-c.secret-key
+    valueFrom: { secretKeyRef: { name: r2-team-c, key: secret-key } }
+```
+
+A catalog's `storageName` is matched case-sensitively against the entry, so `RESEARCH` does not
+find the entry `research`. Prefer lowercase alphanumeric storage names.
+
+Catalog creation and update fail with 400 when the referenced parent token is not configured:
+`No default Cloudflare R2 parent token is configured on the server (polaris.storage.cloudflare-r2.access-key / secret-key)`,
+or the same message naming `polaris.storage.cloudflare-r2.<storageName>.*`.
+
+### Layout rules for CLOUDFLARE_R2 catalogs
+
+An R2 temporary credential binds to exactly one bucket. A catalog may list several buckets in
+`allowedLocations`, but every location of one table (its base location, `write.data.path` and
+`write.metadata.path`) must sit in one bucket; a table that spans two buckets is refused with 400
+`R2 credentials are scoped to one bucket`. Lay tables out bucket-per-table or bucket-per-namespace.
+Allowed locations must not contain an empty path segment (`//`).
+
+### What CLOUDFLARE_R2 clients receive
+
+With `X-Iceberg-Access-Delegation: vended-credentials`, `loadTable` returns
+`s3.access-key-id` (the parent key id), `s3.secret-access-key`, `s3.session-token`,
+`s3.session-token-expires-at-ms`, `s3.endpoint`, `s3.path-style-access=true`,
+`client.region=auto`, and `client.refresh-credentials-endpoint`. Every client that can
+load a table learns the parent key id; the secret and token are per table. On the wire
+`s3.session-token` is the base64 encoding of `jwt/<signed JWT>`; clients pass it through
+unchanged. Clients that honor `client.refresh-credentials-endpoint` can renew before expiry.
+A client that ignores it holds a credential valid for only
+`STORAGE_CREDENTIAL_DURATION_SECONDS` from mint time. Polaris caches vended credentials
+for `min(remaining lifetime / 2, STORAGE_CREDENTIAL_CACHE_DURATION_SECONDS)`; the cache
+duration must stay below the credential duration or the first vend fails.
+
+### Diagnosing R2 access errors
+
+R2 checks the signed token when data is accessed, not when Polaris vends it.
+
+| Client symptom | Likely cause |
+|---|---|
+| `AccessDenied` on every object | parent token lacks permission on the bucket |
+| `AccessDenied` on objects under another table | expected: credentials are prefix-scoped |
+| 404 `NoSuchBucket`, or 400 `NoSuchBucketException` at `createTable` | the jurisdiction in the catalog's `endpoint` does not match the bucket's. Buckets live in one jurisdiction's namespace, so R2 answers that a bucket from another jurisdiction does not exist. A location hint such as `WEUR` is not a jurisdiction |
+| 403 `SignatureDoesNotMatch` | the credential is past its `exp`, or it was signed with a parent secret that has since been rotated, or the Polaris host's clock has skewed; Polaris hosts need NTP. R2 reports expiry as a signature error and returns no `Expired*` or `InvalidToken` code, so client retry logic must not wait for one |
+| 400 `No default Cloudflare R2 parent token is configured` | set `polaris.storage.cloudflare-r2.*` or the catalog's `storageName` entry |
+| 400 `R2 credentials are scoped to one bucket` | a table's locations span buckets |
+| 400 `S3 credential vending mechanism CLOUDFLARE_R2 is not enabled in this realm` | the realm's `SUPPORTED_S3_CREDENTIAL_VENDING_MECHANISMS` omits `CLOUDFLARE_R2` (the kill switch) |
+
+### Rotating the parent token
+
+Revoking a parent token invalidates every temporary credential derived from it immediately.
+Polaris reads `polaris.storage.cloudflare-r2.*` at startup. To rotate: create the new token, deploy
+Polaris with it, wait at least `STORAGE_CREDENTIAL_DURATION_SECONDS`, then revoke the old token.
+Never use the Cloudflare "Roll" action on a token Polaris is using: it replaces the secret in
+place, and every credential minted from the old secret fails at once.
+
+### Upgrading and downgrading with CLOUDFLARE_R2 catalogs
+
+A Polaris image without the `credentialVendingMechanism` field ignores it when it reads a catalog and
+dispatches every S3 catalog to STS. An older instance that shares the metastore therefore
+treats a `CLOUDFLARE_R2` catalog as a plain S3 catalog without a role ARN, and its vends and
+cleanup tasks fail. Finish upgrading every instance that shares the metastore before you
+enable `CLOUDFLARE_R2` in a realm or create a `CLOUDFLARE_R2` catalog. Existing S3 catalogs
+need no migration: rows written before the field existed read as `STS`, and every write from
+now on stores the field. To downgrade to an image without the field, remove or migrate every
+`CLOUDFLARE_R2` catalog and let its pending tasks drain first.
+
+### What each mechanism vends
+
+No mechanism adds a key outside today's `s3.*` and `client.*` contract; they differ in how the
+credential triple is produced.
+
+| Key | `STS` | none (`stsUnavailable: true`) | `CLOUDFLARE_R2` |
+|---|---|---|---|
+| `s3.access-key-id`, `s3.secret-access-key`, `s3.session-token` | yes | no | yes |
+| `s3.session-token-expires-at-ms` | when STS returns an expiration | no | yes |
+| `s3.endpoint`, `s3.path-style-access`, `client.region` | from the catalog | from the catalog | from the catalog |
+| `client.refresh-credentials-endpoint` | when the client asks for it | n/a (a vended-credentials request against a `stsUnavailable` catalog is a 400 at the handler) | when the client asks for it |
+
+### Security note for locally signed credentials
+
+A server that holds a signing token is a credential vending mechanism for that bucket set: a compromise of
+the server can mint credentials up to the parent token's permissions for as long as that token
+lives. This is the same class of exposure as STS-based vending, where the server holds AWS
+credentials able to `AssumeRole`; the difference is that an AWS identity can be a workload identity
+with automatic rotation, while a parent token is a static secret. Compensating controls: scope the
+parent token to object read/write on the catalog's buckets only, never an admin permission; use
+one parent token per `storageName` for each trust boundary (nothing enforces one name per catalog,
+and the default entry is shared by every catalog without a name); inject the secret from a secret
+store and keep it out of logs (Polaris excludes it from cache-key identity, `toString` and every
+log line, but it stays in server memory); rotate by creating the successor, deploying it, waiting
+one credential lifetime and revoking the predecessor; use the realm allowlist to stop issuance, and
+revoke the parent token at the vendor if the secret is stolen, since the allowlist does nothing
+against a stolen secret; and reject any credential scope the vendor cannot represent rather than
+widening it.
+
 ## Client configuration
 
 Engines connect through the Iceberg REST API and let Polaris vend credentials at table-load time;
 they do not need static AWS credentials when STS is available.
 
 Spark example, matching the property names used by the existing MinIO / RustFS guides:
+
+This example follows the existing MinIO and RustFS guides for the property names. At the time of writing the authors have verified PyIceberg, DuckDB and Iceberg Java clients against R2 with vended credentials; Spark and Trino have not been run.
 
 ```shell
 bin/spark-sql \

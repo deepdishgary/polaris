@@ -47,6 +47,18 @@ client.
 
 {{% include-config-section "storage-aws" %}}
 
+### Cloudflare R2 (`credentialVendingMechanism: CLOUDFLARE_R2`)
+
+For an S3 catalog whose `credentialVendingMechanism` is `CLOUDFLARE_R2`, Polaris mints the temporary
+credential locally, with no call to Cloudflare: it signs a JWT with the server-side parent API
+token and derives the temporary secret from that JWT. The token is scoped to one bucket and to the
+table's key prefixes, with scope `object-read-only` when the caller may only read and list, or
+`object-read-write` when the caller may write or delete. The property names are the S3 ones above;
+`s3.endpoint`, `s3.path-style-access=true` and `client.region=auto` come from the catalog. On the
+wire `s3.session-token` is the base64 encoding of `jwt/<signed JWT>` rather than a bare JWT;
+clients pass it through unchanged, so reading the claims while debugging takes a base64 decode
+and then a strip of the `jwt/` prefix.
+
 ## Azure ADLS
 
 Polaris generates a
@@ -87,6 +99,7 @@ Iceberg SDK each client uses.
 | Client                             | Storage type | Required properties                                            |
 |------------------------------------|--------------|----------------------------------------------------------------|
 | Apache Spark (Iceberg ≥ 1.8)       | S3           | `s3.access-key-id`, `s3.secret-access-key`, `s3.session-token` |
+| Apache Spark (Iceberg ≥ 1.8)       | S3 (`CLOUDFLARE_R2` mechanism) | `s3.access-key-id`, `s3.secret-access-key`, `s3.session-token`, plus `s3.endpoint`, `s3.path-style-access`, `client.region` from the catalog |
 | Apache Spark (Iceberg ≥ 1.8)       | ADLS / Blob  | `adls.sas-token.<account-host>`                                |
 | Apache Spark (Iceberg 1.7.x)       | ADLS / Blob  | `adls.sas-token.<account-name>`                                |
 | PyIceberg (via `adlfs` / `fsspec`) | ADLS / Blob  | `adls.sas-token`, `adls.account-name`                          |
