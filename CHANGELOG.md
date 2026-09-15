@@ -37,12 +37,24 @@ request adding CHANGELOG notes for breaking (!) changes and possibly other secti
   and in the storage integration provider. A listed mechanism with no implementation in the server
   is reported at startup and refused at use with "S3 credential vending mechanism `<id>` is not
   available in this server".
+- `CLOUDFLARE_R2` vends Cloudflare R2 temporary credentials by signing a JWT locally with a
+  server-held parent token (`polaris.storage.cloudflare-r2.*`), scoped to one bucket and the
+  table's key prefixes; the catalog's `endpoint` must be an R2 endpoint with
+  `pathStyleAccess: true` and `region: "auto"`, and the endpoint is frozen after creation. A
+  `CLOUDFLARE_R2` catalog without a configured parent token for its `storageName` is refused at
+  create and update.
 
 ### Upgrade notes
 
 - `GET /api/management/v1/catalogs` responses for S3 catalogs now carry
   `credentialVendingMechanism: STS`. No stored configuration changes; rows written before this
   release read as `STS`.
+- Rolling upgrades: an image without this change ignores the unknown `credentialVendingMechanism`
+  property and treats a `CLOUDFLARE_R2` catalog as a plain S3 catalog with no role ARN, so its
+  vends and its cleanup tasks fail. Finish upgrading every Polaris instance that shares the
+  metastore (request servers and task executors alike) before enabling `CLOUDFLARE_R2` in any
+  realm or creating a `CLOUDFLARE_R2` catalog. To downgrade to an image without this change, remove
+  or migrate every `CLOUDFLARE_R2` catalog and let its pending tasks drain first.
 - `SUPPORTED_S3_CREDENTIAL_VENDING_MECHANISMS` lists every mechanism a realm accepts and has no
   implicit member: a realm override that omits `STS` rejects every plain S3 catalog in that realm.
   Startup reports an allowlisted mechanism with no installed bean as a non-severe readiness
