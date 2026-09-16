@@ -392,29 +392,35 @@ credential triple is produced.
 
 ### Security note for locally signed credentials
 
-A server that holds a signing token is a credential vending mechanism for that bucket set: a compromise of
+A server that holds a signing token can mint credentials for that bucket set: a compromise of
 the server can mint credentials up to the parent token's permissions for as long as that token
 lives. This is the same class of exposure as STS-based vending, where the server holds AWS
 credentials able to `AssumeRole`; the difference is that an AWS identity can be a workload identity
-with automatic rotation, while a parent token is a static secret. Compensating controls: scope the
-parent token to object read/write on the catalog's buckets only, never an admin permission; use
-one parent token per `storageName` for each trust boundary (nothing enforces one name per catalog,
-and the default entry is shared by every catalog without a name); inject the secret from a secret
-store and keep it out of logs (Polaris excludes it from cache-key identity, `toString` and every
-log line, but it stays in server memory); rotate by creating the successor, deploying it, waiting
-one credential lifetime and revoking the predecessor; use the realm allowlist to stop issuance, and
-revoke the parent token at the vendor if the secret is stolen, since the allowlist does nothing
-against a stolen secret; and reject any credential scope the vendor cannot represent rather than
-widening it.
+with automatic rotation, while a parent token is a static secret.
+
+Compensating controls:
+
+- Scope the parent token to object read/write on the catalog's buckets only, never an admin
+  permission.
+- Use one parent token per `storageName` for each trust boundary (nothing enforces one name per
+  catalog, and the default entry is shared by every catalog without a name).
+- Inject the secret from a secret store and keep it out of logs (Polaris excludes it from
+  cache-key identity, `toString` and every log line, but it stays in server memory).
+- Rotate by creating the successor, deploying it, waiting one credential lifetime and revoking the
+  predecessor.
+- Use the realm allowlist to stop issuance, and revoke the parent token at the vendor if the
+  secret is stolen, since the allowlist does nothing against a stolen secret.
+- Reject any credential scope the vendor cannot represent rather than widening it.
 
 ## Client configuration
 
 Engines connect through the Iceberg REST API and let Polaris vend credentials at table-load time;
 they do not need static AWS credentials when STS is available.
 
-Spark example, matching the property names used by the existing MinIO / RustFS guides:
+PyIceberg, DuckDB and the Iceberg Java client have been verified against R2 with vended
+credentials; Spark and Trino have not been run.
 
-This example follows the existing MinIO and RustFS guides for the property names. At the time of writing the authors have verified PyIceberg, DuckDB and Iceberg Java clients against R2 with vended credentials; Spark and Trino have not been run.
+Spark example, matching the property names used by the existing MinIO / RustFS guides:
 
 ```shell
 bin/spark-sql \
