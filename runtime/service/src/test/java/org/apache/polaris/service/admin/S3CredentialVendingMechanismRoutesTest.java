@@ -75,8 +75,7 @@ import org.junit.jupiter.params.provider.ValueSource;
  * <p>The policy routes go through {@code PolicyCatalogHandler}, which {@link TestServices} does not
  * wire (it has no policy API): building that handler by hand here would need the authorizer and
  * resolution internals {@link TestServices} keeps private to its {@code build()} closure. That case
- * is covered by the CDI test added when the mechanism registry is exercised through a real
- * container.
+ * is covered by {@link org.apache.polaris.service.storage.S3CredentialVendingMechanismCdiTest}.
  */
 class S3CredentialVendingMechanismRoutesTest {
 
@@ -253,11 +252,11 @@ class S3CredentialVendingMechanismRoutesTest {
   /**
    * Once the CLOUDFLARE_R2 mechanism is actually installed (a real parent-token resolver is
    * configured), a catalog using it can be created directly and every Iceberg route serves. This is
-   * the PR 1 "refused at initialization" scenario, flipped: once a real bean exists, a
-   * CLOUDFLARE_R2 catalog can no longer be created at all without a configured parent token (see
-   * {@link PolarisAdminService}'s presence check), so "installed but never given a token" is no
-   * longer a state the create API can reach; the uninstalled-mechanism gate contract itself is
-   * covered generically, for a mechanism with no R2-specific presence check, by {@link
+   * the configuration-only scenario, flipped: once a real bean exists, a CLOUDFLARE_R2 catalog can
+   * no longer be created at all without a configured parent token (see {@link
+   * PolarisAdminService}'s presence check), so "installed but never given a token" is no longer a
+   * state the create API can reach; the uninstalled-mechanism gate contract itself is covered
+   * generically, for a mechanism with no R2-specific presence check, by {@link
    * org.apache.polaris.service.storage.S3CredentialVendingMechanismCdiTest}.
    */
   @ParameterizedTest
@@ -424,7 +423,7 @@ class S3CredentialVendingMechanismRoutesTest {
    * ever reached, since the allowlist check runs first.
    */
   @Test
-  void theRealmKillSwitchGatesAnExternalCatalogBeforeItsFederatedFactory() {
+  void theRealmKillSwitchRefusesAnExternalCatalogThatOtherwiseReachesItsFederatedFactory() {
     Map<String, Object> config = config(false);
     config.put("ENABLE_CATALOG_FEDERATION", true);
     TestServices svc = servicesWithR2Installed(config);

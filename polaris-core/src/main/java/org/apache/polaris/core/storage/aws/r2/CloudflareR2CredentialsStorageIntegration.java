@@ -121,7 +121,7 @@ public class CloudflareR2CredentialsStorageIntegration
   /**
    * Mint a fresh {@link StorageAccessConfig} for the given key. Called by the cache on miss, so the
    * INFO line below is one per mint rather than one per credential request: a request served from
-   * the cache logs nothing. The line names the credential's shape and never its material — no key
+   * the cache logs nothing. The line names the credential's shape and never its material: no key
    * id, no secret, no session token, no JWT.
    *
    * <p>The {@code s3.*} tail is emitted from the catalog's explicit values. The model check on a
@@ -229,8 +229,8 @@ public class CloudflareR2CredentialsStorageIntegration
    * Polaris never authorized.
    *
    * <p>An empty result scopes the credential to the whole bucket, so it is returned only when a
-   * grant is literally at bucket root ({@code s3://bucket} or {@code s3://bucket/}) — a path that
-   * is empty after one leading slash comes off.
+   * grant is literally at bucket root ({@code s3://bucket} or {@code s3://bucket/}). That path is
+   * empty after one leading slash comes off.
    *
    * <p>Combining several grants unions their locations: every location under the single bucket
    * contributes a prefix, whatever actions its own grant carries.
